@@ -4,6 +4,8 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { PenLine, Plus, Trash2 } from "lucide-react";
 import { useData, todayIso, BusinessError } from "@/lib/store/DataProvider";
+import { useSession } from "@/lib/auth/SessionProvider";
+import { hasPermission } from "@/lib/permissions";
 import { useToast } from "@/components/ui/Toast";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { Badge } from "@/components/ui/Badge";
@@ -100,11 +102,28 @@ function emptyPayment(): PaymentDraft {
 }
 
 export default function NewStoreOrderPage() {
-  const { db, createStoreOrder } = useData();
+  const { db, createStoreOrder, mode } = useData();
+  const { profile } = useSession();
   const { notify } = useToast();
   const router = useRouter();
 
+  // Mode connecté : l'identité vient de la session (aucun choix manuel) et
+  // le magasin est limité aux magasins autorisés du profil. Côté serveur,
+  // la fonction RPC re-vérifie tout — l'interface n'est jamais la sécurité.
+  const connected = mode === "connected" && profile !== null;
+  const allowedStores =
+    connected && !hasPermission(profile.role, "voir_tous_magasins")
+      ? profile.allowedStoreIds
+      : null;
+  const canOffCatalog =
+    !connected || hasPermission(profile.role, "produit_hors_catalogue");
+
   const [storeId, setStoreId] = useState("");
+  const [storeInitialized, setStoreInitialized] = useState(false);
+  if (connected && !storeInitialized && profile.primaryStoreId) {
+    setStoreId(profile.primaryStoreId);
+    setStoreInitialized(true);
+  }
   const [salespersonId, setSalespersonId] = useState("");
   const [orderedAt, setOrderedAt] = useState(todayIso());
   const [desiredAt, setDesiredAt] = useState("");
@@ -151,7 +170,9 @@ export default function NewStoreOrderPage() {
   const validate = (): string[] => {
     const errs: string[] = [];
     if (!storeId) errs.push("Le magasin est obligatoire.");
-    if (!salespersonId) errs.push("La vendeuse ou le vendeur est obligatoire.");
+    if (!connected && !salespersonId) {
+      errs.push("La vendeuse ou le vendeur est obligatoire.");
+    }
     if (!customerName.trim()) errs.push("Le nom du client est obligatoire.");
     if (!phone.trim()) errs.push("Le téléphone du client est obligatoire.");
     if (fulfillmentMode === "livraison" && !address.trim()) {
@@ -177,7 +198,7 @@ export default function NewStoreOrderPage() {
     return errs;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const errs = validate();
     setErrors(errs);
@@ -186,11 +207,11 @@ export default function NewStoreOrderPage() {
       return;
     }
     setSubmitting(true);
-    let order;
     try {
-      order = createStoreOrder({
+      const order = await createStoreOrder({
         storeId,
-        salespersonId,
+        // En mode connecté l'identité est déduite de la session côté serveur.
+        salespersonId: connected ? profile.id : salespersonId,
         orderedAt: new Date(`${orderedAt}T10:00:00`).toISOString(),
         desiredAt: desiredAt ? new Date(`${desiredAt}T10:00:00`).toISOString() : undefined,
         customer: {
@@ -293,34 +314,53 @@ export default function NewStoreOrderPage() {
             required
           >
             <option value="">Choisir un magasin</option>
-            {db.stores.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
+            {db.stores
+              .filter((s) => !allowedStores || allowedStores.includes(s.id))
+              .map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
           </select>
         </div>
         <div>
           <label htmlFor="salesperson" className="field-label">
             Vendeuse / vendeur *
           </label>
-          <select
-            id="salesperson"
-            className="field-input"
-            value={salespersonId}
-            onChange={(e) => setSalespersonId(e.target.value)}
-            required
-          >
-            <option value="">Choisir</option>
-            {salespeople.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-          {storeId === "" ? (
-            <p className="field-hint">Choisissez d&apos;abord le magasin.</p>
-          ) : null}
+          {connected ? (
+            <>
+              <input
+                id="salesperson"
+                className="field-input"
+                value={profile.displayName}
+                readOnly
+                aria-readonly
+              />
+              <p className="field-hint">
+                Identité renseignée automatiquement depuis votre compte.
+              </p>
+            </>
+          ) : (
+            <>
+              <select
+                id="salesperson"
+                className="field-input"
+                value={salespersonId}
+                onChange={(e) => setSalespersonId(e.target.value)}
+                required
+              >
+                <option value="">Choisir</option>
+                {salespeople.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+              {storeId === "" ? (
+                <p className="field-hint">Choisissez d&apos;abord le magasin.</p>
+              ) : null}
+            </>
+          )}
         </div>
         <div>
           <label htmlFor="orderedAt" className="field-label">
@@ -498,18 +538,25 @@ export default function NewStoreOrderPage() {
           onSelect={(selection) => setLines((ls) => [...ls, catalogLine(selection)])}
         />
         <div className="mt-2 flex items-center justify-between gap-2">
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={() => setLines((ls) => [...ls, emptyLine()])}
-          >
-            <PenLine size={16} aria-hidden />
-            Produit hors catalogue
-          </button>
-          <p className="text-xs" style={{ color: "var(--muted)" }}>
-            La saisie libre sera réservée aux responsables après l&apos;ajout de
-            l&apos;authentification.
-          </p>
+          {canOffCatalog ? (
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setLines((ls) => [...ls, emptyLine()])}
+            >
+              <PenLine size={16} aria-hidden />
+              Produit hors catalogue
+            </button>
+          ) : (
+            <p className="text-xs" style={{ color: "var(--muted)" }}>
+              La saisie hors catalogue est réservée aux responsables.
+            </p>
+          )}
+          {canOffCatalog && !connected ? (
+            <p className="text-xs" style={{ color: "var(--muted)" }}>
+              La saisie libre sera réservée aux responsables en mode connecté.
+            </p>
+          ) : null}
         </div>
         <div className="mt-4 flex flex-col gap-4">
           {lines.length === 0 ? (

@@ -61,11 +61,11 @@ export default function ShipmentsPage() {
     );
   };
 
-  const submitReception = (e: React.FormEvent) => {
+  const submitReception = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!receiving) return;
     try {
-      receiveShipment(
+      await receiveShipment(
         receiving.id,
         receiving.items.map((i) => ({
           itemId: i.id,

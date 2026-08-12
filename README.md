@@ -6,11 +6,20 @@ arrivages, les mouvements entre dépôts, les livraisons/retraits clients, les
 règlements et les restes à payer (RAP), ainsi que la provenance marketing des
 commandes.
 
-> **Mode démonstration.** Cette première version est un prototype fonctionnel
-> avec des données entièrement fictives, stockées dans le `localStorage` du
-> navigateur. Aucune intégration réelle (Shopify, Supabase, OpenAI, WhatsApp)
-> n'est branchée, aucun secret n'est stocké, et l'application **n'est pas
-> prête pour la production** (pas d'authentification).
+L'application fonctionne selon **deux modes clairement séparés** :
+
+* **Mode démonstration** (aucune variable d'environnement) : données
+  entièrement fictives dans le `localStorage` du navigateur, aucune
+  authentification, badge « Mode démonstration ». Le build fonctionne sans
+  aucune variable.
+* **Mode connecté** (variables Supabase présentes) : Supabase est la source
+  de vérité — base partagée, authentification obligatoire, un compte par
+  employé, identité automatique de la vendeuse/du vendeur, droits par rôle
+  et par magasin vérifiés côté serveur (RLS + fonctions RPC PostgreSQL).
+  Voir **docs/SUPABASE_SETUP.md** pour l'activer pas à pas.
+
+> Les données de démonstration ne sont JAMAIS recopiées automatiquement vers
+> Supabase. Shopify, WhatsApp et OpenAI ne sont pas encore connectés.
 
 ## Démarrer
 
@@ -23,8 +32,29 @@ npm run build     # build de production (aucune variable d'environnement requise
 ```
 
 L'application se compile et fonctionne sur Vercel **sans aucune variable
-d'environnement**. Le fichier `.env.example` liste les variables prévues pour
-les phases suivantes (toutes vides).
+d'environnement** (mode démonstration). Pour le mode connecté, seules deux
+variables publiques sont nécessaires (`NEXT_PUBLIC_SUPABASE_URL` et
+`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`) — jamais de secret key ni de service
+role key côté client. Le fichier `.env.example` liste les variables (toutes
+vides).
+
+### Rôles et permissions (mode connecté)
+
+| Rôle | Périmètre |
+| --- | --- |
+| `vendeur` | Commandes et règlements de son magasin, identité automatique |
+| `responsable_magasin` | Son/ses magasins + validations (jamais sa propre demande d'annulation) |
+| `achats` | Catalogue, fournisseurs, commandes fournisseurs, relances |
+| `logistique` | Arrivages, dépôts, réceptions (pas d'encaissements détaillés) |
+| `comptabilite` | Encaissements, règlements, RAP |
+| `direction` | Lecture complète, finances, validations, tous magasins |
+| `administrateur` | Accès complet + gestion des utilisateurs |
+
+La matrice vit dans `src/lib/types.ts` (`ROLE_PERMISSIONS`) et est **dupliquée
+dans PostgreSQL** (`app.role_permissions`, migrations Supabase) — un test
+vérifie que les deux restent synchronisées. Les restrictions sont appliquées
+par Row Level Security et par les fonctions RPC : masquer un bouton n'est
+jamais la sécurité.
 
 ## Pages
 
@@ -57,7 +87,12 @@ src/
     derive.ts             # Valeurs calculées : totaux, RAP, statut de paiement,
                           # file des relances (jamais stockées, toujours dérivées)
     seed.ts               # Données de démonstration fictives (10 scénarios)
-    repository/           # Interface DataRepository + implémentation localStorage
+    config.ts             # Détection du mode (démo / connecté Supabase)
+    permissions.ts        # Matrice de permissions côté interface
+    supabase/             # Clients navigateur + serveur (@supabase/ssr)
+    auth/SessionProvider  # Session vérifiée (getUser) + profil employé
+    repository/           # Interface DataRepository + localStorage (démo)
+                          # + SupabaseRepository (instantané RLS + RPC atomiques)
     store/DataProvider.tsx# Contexte React : chargement hydratation-safe,
                           # actions métier, persistance via le repository
   components/
@@ -93,10 +128,12 @@ Règles clés du prototype :
 
 1. **Shopify** enverra les nouvelles commandes automatiquement par **webhook**
    (`orders/create`, `orders/updated`) vers une route API, avec vérification
-   de signature (`SHOPIFY_WEBHOOK_SECRET`).
-2. **Supabase** stockera les données : un `SupabaseRepository` remplacera le
-   `LocalStorageRepository` en implémentant la même interface
-   `DataRepository`, sans réécrire l'interface utilisateur.
+   de signature (`SHOPIFY_WEBHOOK_SECRET`). Les colonnes `shopify_*` et leurs
+   contraintes d'unicité sont déjà prêtes dans le schéma Supabase.
+2. **Supabase** (FAIT en V2) : schéma relationnel versionné dans
+   `supabase/migrations`, RLS sur toutes les tables, fonctions RPC atomiques
+   portant les règles métier V1.2, seed référentiel fictif, tests SQL dans
+   `supabase/tests/rls_policies.test.sql`.
 3. **OpenAI** proposera les fournisseurs alternatifs, les relances et les
    alertes (via `ProductSupplier` et l'historique d'activité).
 4. **WhatsApp Business** pourra envoyer les messages fournisseurs **après

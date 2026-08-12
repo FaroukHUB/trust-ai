@@ -584,3 +584,18 @@ describe("V1.2 — migration v2 → v3", () => {
     expect(again.activityLog).toHaveLength(v3.activityLog.length);
   });
 });
+
+describe("V2 — auto-validation interdite", () => {
+  it("le demandeur d'une annulation ne peut pas la valider lui-même", () => {
+    requestOrderCancellationM(db, "ord-mag-her-1", "Julie Mancini");
+    const request = db.approvalRequests.find(
+      (r) => r.type === "annulation_commande" && r.relatedOrderId === "ord-mag-her-1",
+    )!;
+    expect(() =>
+      decideApprovalM(db, request.id, true, "Julie Mancini", "Motif"),
+    ).toThrow(/propre demande/);
+    // Une autre personne peut décider normalement.
+    decideApprovalM(db, request.id, false, "Direction Trust", "Refus test");
+    expect(request.status).toBe("refusee");
+  });
+});

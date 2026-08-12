@@ -502,6 +502,8 @@ export interface ApprovalRequest {
   relatedShipmentId?: string;
   /** Personne (ou système) ayant demandé l'action. */
   requestedBy?: string;
+  /** Profil employé demandeur (mode connecté). */
+  requestedByProfileId?: string;
   /** Montant en jeu (ex. montant déjà encaissé pour une annulation). */
   financialImpact?: number;
   status: ApprovalStatus;
@@ -535,6 +537,7 @@ export type Role =
   | "responsable_magasin"
   | "achats"
   | "logistique"
+  | "comptabilite"
   | "direction"
   | "administrateur";
 
@@ -544,8 +547,11 @@ export type Permission =
   | "valider_decision"
   | "gerer_achats"
   | "gerer_logistique"
+  | "gerer_encaissements"
+  | "voir_acquisition"
   | "gerer_catalogue"
   | "produit_hors_catalogue"
+  | "voir_tous_magasins"
   | "administrer";
 
 /**
@@ -568,24 +574,36 @@ export interface UserProfile {
   active: boolean;
 }
 
+/**
+ * Matrice de permissions centralisée et testable.
+ * La même matrice est portée côté PostgreSQL (fonction `app.role_permissions`
+ * des migrations Supabase) : les rôles ne sont jamais purement visuels, les
+ * restrictions sont vérifiées côté serveur et dans la base.
+ */
 export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
   vendeur: ["creer_commande", "encaisser_reglement"],
   responsable_magasin: [
     "creer_commande",
     "encaisser_reglement",
     "valider_decision",
+    "gerer_encaissements",
+    "voir_acquisition",
     "produit_hors_catalogue",
   ],
   achats: ["gerer_achats", "valider_decision", "gerer_catalogue"],
   logistique: ["gerer_logistique"],
+  comptabilite: ["gerer_encaissements"],
   direction: [
     "creer_commande",
     "encaisser_reglement",
     "valider_decision",
     "gerer_achats",
     "gerer_logistique",
+    "gerer_encaissements",
+    "voir_acquisition",
     "gerer_catalogue",
     "produit_hors_catalogue",
+    "voir_tous_magasins",
   ],
   administrateur: [
     "creer_commande",
@@ -593,8 +611,11 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "valider_decision",
     "gerer_achats",
     "gerer_logistique",
+    "gerer_encaissements",
+    "voir_acquisition",
     "gerer_catalogue",
     "produit_hors_catalogue",
+    "voir_tous_magasins",
     "administrer",
   ],
 };

@@ -11,7 +11,9 @@ import {
   type ReactNode,
 } from "react";
 import { repository } from "../repository";
+import { SupabaseRepository } from "../repository/supabase";
 import { todayIso } from "../format";
+import { useSession } from "../auth/SessionProvider";
 import {
   addPaymentM,
   createStoreOrderM,
@@ -25,68 +27,107 @@ import {
   type NewStoreOrderInput,
   type PaymentInput,
 } from "../mutations";
-import type { Database, Order, ProcurementStatus } from "../types";
+import type { AppMode } from "../config";
+import type { Database, ProcurementStatus } from "../types";
 
 export type { NewStoreOrderInput, NewOrderLineInput, PaymentInput } from "../mutations";
 export { BusinessError } from "../mutations";
 
+/**
+ * Fournisseur de données à deux modes :
+ *
+ * - « demo » : localStorage v3 + mutations métier pures (V1), inchangé ;
+ * - « connected » : Supabase est la source de vérité. Les lectures chargent
+ *   un instantané (filtré par RLS), les écritures passent par des fonctions
+ *   RPC atomiques qui rejouent les règles V1.2 côté serveur avec l'identité
+ *   authentifiée. localStorage n'est pas utilisé et les données de
+ *   démonstration ne sont jamais recopiées vers Supabase.
+ *
+ * Toutes les actions sont asynchrones (résolution immédiate en mode démo).
+ */
 interface DataContextValue {
-  /** null tant que l'hydratation client n'est pas terminée. */
+  mode: AppMode;
+  /** null tant que le premier chargement n'est pas terminé. */
   db: Database | null;
+  /** Erreur de chargement réseau (mode connecté). */
+  loadError: string | null;
+  refresh: () => Promise<void>;
   /** Filtre global par magasin ("all" = tous les magasins). */
   storeFilter: string;
   setStoreFilter: (storeId: string) => void;
-  createStoreOrder: (input: NewStoreOrderInput) => Order;
-  addPayment: (orderId: string, payment: PaymentInput) => void;
+  createStoreOrder: (
+    input: NewStoreOrderInput,
+  ) => Promise<{ id: string; reference: string }>;
+  addPayment: (orderId: string, payment: PaymentInput) => Promise<void>;
   markReminderDone: (
     lineId: string,
     outcome: "indisponible" | "disponible",
     actor?: string,
-  ) => void;
-  prepareSupplierOrder: (supplierId: string, lineIds: string[]) => void;
+  ) => Promise<void>;
+  prepareSupplierOrder: (supplierId: string, lineIds: string[]) => Promise<void>;
   decideApproval: (
     requestId: string,
     approved: boolean,
     actor: string,
     reason?: string,
     options?: DecideApprovalOptions,
-  ) => void;
-  requestOrderCancellation: (orderId: string) => void;
-  updateLineStatus: (lineId: string, status: ProcurementStatus) => void;
+  ) => Promise<void>;
+  requestOrderCancellation: (orderId: string) => Promise<void>;
+  updateLineStatus: (lineId: string, status: ProcurementStatus) => Promise<void>;
   receiveShipment: (
     shipmentId: string,
     receipts: { itemId: string; quantityReceived: number }[],
-  ) => void;
+  ) => Promise<void>;
   resetDemo: () => void;
 }
 
 const DataContext = createContext<DataContextValue | null>(null);
 
 export function DataProvider({ children }: { children: ReactNode }) {
-  // db reste null pendant le rendu serveur et la première passe client :
-  // cela évite tout écart d'hydratation entre le HTML serveur et le client.
+  const { mode, profile, supabase } = useSession();
   const [db, setDb] = useState<Database | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [storeFilter, setStoreFilter] = useState<string>("all");
-  // Référence synchone vers l'état courant : permet aux mutations de
-  // valider les règles métier sur des données à jour et de lever des
-  // erreurs AVANT tout setState (les erreurs remontent à l'appelant).
   const dbRef = useRef<Database | null>(null);
   const loaded = useRef(false);
 
-  useEffect(() => {
-    if (loaded.current) return;
-    loaded.current = true;
-    const initial = repository.load();
-    dbRef.current = initial;
-    setDb(initial);
-  }, []);
+  const remote = useMemo(
+    () => (mode === "connected" && supabase ? new SupabaseRepository(supabase) : null),
+    [mode, supabase],
+  );
 
-  /**
-   * Applique une mutation métier pure sur un clone de la base, puis
-   * persiste et met à jour l'état. Si la mutation lève une BusinessError,
-   * rien n'est modifié et l'erreur remonte au composant appelant.
-   */
-  const apply = useCallback(<T,>(fn: (draft: Database) => T): T => {
+  const refresh = useCallback(async () => {
+    if (!remote) return;
+    try {
+      const snapshot = await remote.loadSnapshot();
+      dbRef.current = snapshot;
+      setDb(snapshot);
+      setLoadError(null);
+    } catch (e) {
+      setLoadError(
+        e instanceof Error ? e.message : "Erreur réseau lors du chargement.",
+      );
+    }
+  }, [remote]);
+
+  // Chargement initial.
+  useEffect(() => {
+    if (mode === "demo") {
+      if (loaded.current) return;
+      loaded.current = true;
+      const initial = repository.load();
+      dbRef.current = initial;
+      setDb(initial);
+      return;
+    }
+    // Mode connecté : on attend un profil actif avant de charger.
+    if (profile) {
+      void refresh();
+    }
+  }, [mode, profile, refresh]);
+
+  /** Mode démo : mutation pure locale + persistance localStorage. */
+  const applyLocal = useCallback(<T,>(fn: (draft: Database) => T): T => {
     const current = dbRef.current;
     if (!current) {
       throw new Error("Données non chargées : réessayez dans un instant.");
@@ -100,81 +141,128 @@ export function DataProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const createStoreOrder = useCallback(
-    (input: NewStoreOrderInput): Order => apply((d) => createStoreOrderM(d, input)),
-    [apply],
+    async (input: NewStoreOrderInput) => {
+      if (remote) {
+        const created = await remote.createStoreOrder(input);
+        await refresh();
+        return created;
+      }
+      const order = applyLocal((d) => createStoreOrderM(d, input));
+      return { id: order.id, reference: order.reference };
+    },
+    [remote, refresh, applyLocal],
   );
 
   const addPayment = useCallback(
-    (orderId: string, payment: PaymentInput) => {
-      apply((d) => addPaymentM(d, orderId, payment));
+    async (orderId: string, payment: PaymentInput) => {
+      if (remote) {
+        await remote.addPayment(orderId, payment);
+        await refresh();
+        return;
+      }
+      applyLocal((d) => addPaymentM(d, orderId, payment));
     },
-    [apply],
+    [remote, refresh, applyLocal],
   );
 
   const markReminderDone = useCallback(
-    (
+    async (
       lineId: string,
       outcome: "indisponible" | "disponible",
       actor = "Équipe achats",
     ) => {
-      apply((d) => markReminderDoneM(d, lineId, outcome, actor));
+      if (remote) {
+        await remote.markReminderDone(lineId, outcome);
+        await refresh();
+        return;
+      }
+      applyLocal((d) => markReminderDoneM(d, lineId, outcome, actor));
     },
-    [apply],
+    [remote, refresh, applyLocal],
   );
 
   const prepareSupplierOrder = useCallback(
-    (supplierId: string, lineIds: string[]) => {
-      apply((d) => prepareSupplierOrderM(d, supplierId, lineIds, "Équipe achats"));
+    async (supplierId: string, lineIds: string[]) => {
+      if (remote) {
+        await remote.prepareSupplierOrder(supplierId, lineIds);
+        await refresh();
+        return;
+      }
+      applyLocal((d) => prepareSupplierOrderM(d, supplierId, lineIds, "Équipe achats"));
     },
-    [apply],
+    [remote, refresh, applyLocal],
   );
 
   const decideApproval = useCallback(
-    (
+    async (
       requestId: string,
       approved: boolean,
       actor: string,
       reason?: string,
       options?: DecideApprovalOptions,
     ) => {
-      apply((d) => decideApprovalM(d, requestId, approved, actor, reason, options));
+      if (remote) {
+        // L'identité du décideur vient de la session côté serveur.
+        await remote.decideApproval(requestId, approved, reason, options?.expectedAt);
+        await refresh();
+        return;
+      }
+      applyLocal((d) => decideApprovalM(d, requestId, approved, actor, reason, options));
     },
-    [apply],
+    [remote, refresh, applyLocal],
   );
 
   const requestOrderCancellation = useCallback(
-    (orderId: string) => {
-      apply((d) => requestOrderCancellationM(d, orderId));
+    async (orderId: string) => {
+      if (remote) {
+        await remote.requestOrderCancellation(orderId);
+        await refresh();
+        return;
+      }
+      applyLocal((d) => requestOrderCancellationM(d, orderId));
     },
-    [apply],
+    [remote, refresh, applyLocal],
   );
 
   const updateLineStatus = useCallback(
-    (lineId: string, status: ProcurementStatus) => {
-      apply((d) => updateLineStatusM(d, lineId, status));
+    async (lineId: string, status: ProcurementStatus) => {
+      if (remote) {
+        // Non exposé en mode connecté pour l'instant (piloté par les RPC).
+        return;
+      }
+      applyLocal((d) => updateLineStatusM(d, lineId, status));
     },
-    [apply],
+    [remote, applyLocal],
   );
 
   const receiveShipment = useCallback(
-    (
+    async (
       shipmentId: string,
       receipts: { itemId: string; quantityReceived: number }[],
     ) => {
-      apply((d) => receiveShipmentM(d, shipmentId, receipts));
+      if (remote) {
+        await remote.receiveShipment(shipmentId, receipts);
+        await refresh();
+        return;
+      }
+      applyLocal((d) => receiveShipmentM(d, shipmentId, receipts));
     },
-    [apply],
+    [remote, refresh, applyLocal],
   );
 
   const resetDemo = useCallback(() => {
+    if (mode !== "demo") return;
     const fresh = repository.reset();
     dbRef.current = fresh;
     setDb(fresh);
-  }, []);
+  }, [mode]);
 
   const value = useMemo<DataContextValue>(
     () => ({
+      mode,
       db,
+      loadError,
+      refresh,
       storeFilter,
       setStoreFilter,
       createStoreOrder,
@@ -188,7 +276,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
       resetDemo,
     }),
     [
+      mode,
       db,
+      loadError,
+      refresh,
       storeFilter,
       createStoreOrder,
       addPayment,

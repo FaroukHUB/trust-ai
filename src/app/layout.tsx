@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import localFont from "next/font/local";
 import "./globals.css";
 import { DataProvider } from "@/lib/store/DataProvider";
+import { SessionProvider } from "@/lib/auth/SessionProvider";
 import { ToastProvider } from "@/components/ui/Toast";
 import { AppShell } from "@/components/layout/AppShell";
 
@@ -35,11 +36,13 @@ export default function RootLayout({
   return (
     <html lang="fr">
       <body className={`${geistSans.variable} font-sans antialiased`}>
-        <DataProvider>
-          <ToastProvider>
-            <AppShell>{children}</AppShell>
-          </ToastProvider>
-        </DataProvider>
+        <SessionProvider>
+          <DataProvider>
+            <ToastProvider>
+              <AppShell>{children}</AppShell>
+            </ToastProvider>
+          </DataProvider>
+        </SessionProvider>
       </body>
     </html>
   );

@@ -38,9 +38,9 @@ export default function RemindersPage() {
 
   const shown = view === "dues" ? due : view === "programmees" ? scheduled : [];
 
-  const doReminder = (lineId: string, outcome: "indisponible" | "disponible") => {
+  const doReminder = async (lineId: string, outcome: "indisponible" | "disponible") => {
     try {
-      markReminderDone(lineId, outcome);
+      await markReminderDone(lineId, outcome);
       notify(
         outcome === "indisponible"
           ? "Relance enregistrée — prochaine relance programmée lundi prochain."

@@ -86,7 +86,7 @@ export default function ApprovalsPage() {
     setDecision({ request, approved });
   };
 
-  const confirmDecision = () => {
+  const confirmDecision = async () => {
     if (!decision) return;
     // Motif obligatoire pour toute décision sur une annulation (la même
     // règle est appliquée côté mutation : la protection n'est pas
@@ -96,7 +96,7 @@ export default function ApprovalsPage() {
       return;
     }
     try {
-      decideApproval(
+      await decideApproval(
         decision.request.id,
         decision.approved,
         "Responsable magasin",

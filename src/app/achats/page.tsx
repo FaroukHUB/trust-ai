@@ -322,13 +322,20 @@ export default function PurchasesPage() {
         title={`Préparer la commande ${proposalToConfirm?.supplier.name ?? ""} ?`}
         description={`${proposalToConfirm?.lines.length ?? 0} article(s) seront regroupés dans une proposition de commande fournisseur. Elle devra ensuite être validée par un humain — aucun envoi réel ne sera effectué.`}
         confirmLabel="Préparer la proposition"
-        onConfirm={() => {
+        onConfirm={async () => {
           if (proposalToConfirm) {
-            prepareSupplierOrder(
-              proposalToConfirm.supplier.id,
-              proposalToConfirm.lines.map((l) => l.id),
-            );
-            notify("Proposition créée, en attente de validation humaine.");
+            try {
+              await prepareSupplierOrder(
+                proposalToConfirm.supplier.id,
+                proposalToConfirm.lines.map((l) => l.id),
+              );
+              notify("Proposition créée, en attente de validation humaine.");
+            } catch (err) {
+              notify(
+                err instanceof Error ? err.message : "Action impossible.",
+                "error",
+              );
+            }
           }
           setProposalToConfirm(null);
         }}
@@ -345,18 +352,25 @@ export default function PurchasesPage() {
         description={`${approvalToDecide?.title ?? ""} — la validation met à jour le suivi interne. La transmission au fournisseur reste manuelle dans cette version.`}
         confirmLabel={approvalToDecide?.approved ? "Valider" : "Refuser"}
         danger={!approvalToDecide?.approved}
-        onConfirm={() => {
+        onConfirm={async () => {
           if (approvalToDecide) {
-            decideApproval(
-              approvalToDecide.id,
-              approvalToDecide.approved,
-              "Responsable achats",
-            );
-            notify(
-              approvalToDecide.approved
-                ? "Commande fournisseur validée."
-                : "Proposition refusée, articles remis « À commander ».",
-            );
+            try {
+              await decideApproval(
+                approvalToDecide.id,
+                approvalToDecide.approved,
+                "Responsable achats",
+              );
+              notify(
+                approvalToDecide.approved
+                  ? "Commande fournisseur validée."
+                  : "Proposition refusée, articles remis « À commander ».",
+              );
+            } catch (err) {
+              notify(
+                err instanceof Error ? err.message : "Action impossible.",
+                "error",
+              );
+            }
           }
           setApprovalToDecide(null);
         }}

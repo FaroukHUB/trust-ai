@@ -107,7 +107,7 @@ export default function OrderDetailPage() {
   // Le RAP conditionne l'ajout de règlement : commande soldée = pas de bouton.
   const canAddPayment = order.status === "ouverte" && rap > 0;
 
-  const handleAddPayment = (e: React.FormEvent) => {
+  const handleAddPayment = async (e: React.FormEvent) => {
     e.preventDefault();
     const amount = parseFloat(payAmount.replace(",", "."));
     if (Number.isNaN(amount) || amount <= 0) {
@@ -115,7 +115,7 @@ export default function OrderDetailPage() {
       return;
     }
     try {
-      addPayment(order.id, {
+      await addPayment(order.id, {
         amount,
         date: new Date(`${payDate}T12:00:00`).toISOString(),
         method: payMethod,
@@ -765,9 +765,9 @@ export default function OrderDetailPage() {
         description={`L'annulation de ${order.reference} est une décision importante : une demande de validation sera créée et devra être approuvée par un humain.`}
         confirmLabel="Créer la demande"
         danger
-        onConfirm={() => {
+        onConfirm={async () => {
           try {
-            requestOrderCancellation(order.id);
+            await requestOrderCancellation(order.id);
             notify("Demande d'annulation créée, en attente de validation.");
           } catch (err) {
             notify(
@@ -792,10 +792,10 @@ export default function OrderDetailPage() {
         description={`${approvalToDecide?.title ?? ""} — aucune action extérieure réelle ne sera exécutée : seul le suivi interne sera mis à jour.`}
         confirmLabel={approvalToDecide?.approved ? "Valider" : "Refuser"}
         danger={!approvalToDecide?.approved}
-        onConfirm={() => {
+        onConfirm={async () => {
           if (approvalToDecide) {
             try {
-              decideApproval(
+              await decideApproval(
                 approvalToDecide.id,
                 approvalToDecide.approved,
                 "Responsable magasin",

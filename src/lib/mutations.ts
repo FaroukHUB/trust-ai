@@ -353,6 +353,17 @@ export function decideApprovalM(
       "Le motif est obligatoire pour valider ou refuser une annulation de commande.",
     );
   }
+  // Personne ne valide sa propre demande d'annulation (même règle côté
+  // PostgreSQL en mode connecté, comparée sur les profils authentifiés).
+  if (
+    request.type === "annulation_commande" &&
+    request.requestedBy &&
+    request.requestedBy === actor
+  ) {
+    throw new BusinessError(
+      "Vous ne pouvez pas valider ou refuser votre propre demande d'annulation.",
+    );
+  }
   request.status = approved ? "approuvee" : "refusee";
   request.decidedAt = new Date().toISOString();
   request.decidedBy = actor;
