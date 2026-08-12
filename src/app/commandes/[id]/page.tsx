@@ -700,34 +700,47 @@ export default function OrderDetailPage() {
                       <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
                         {approval.description}
                       </p>
-                      <div className="mt-3 flex gap-2">
-                        <button
-                          type="button"
-                          className="btn-primary px-3 py-1.5 text-xs"
-                          onClick={() =>
-                            setApprovalToDecide({
-                              id: approval.id,
-                              approved: true,
-                              title: approval.title,
-                            })
-                          }
-                        >
-                          Valider
-                        </button>
-                        <button
-                          type="button"
-                          className="btn-secondary px-3 py-1.5 text-xs"
-                          onClick={() =>
-                            setApprovalToDecide({
-                              id: approval.id,
-                              approved: false,
-                              title: approval.title,
-                            })
-                          }
-                        >
-                          Refuser
-                        </button>
-                      </div>
+                      {approval.type === "annulation_commande" ? (
+                        // Une annulation exige un motif et un récapitulatif
+                        // financier : elle se traite dans la page Validations.
+                        <div className="mt-3">
+                          <Link
+                            href="/validations"
+                            className="btn-secondary px-3 py-1.5 text-xs"
+                          >
+                            Traiter dans Validations (motif obligatoire)
+                          </Link>
+                        </div>
+                      ) : (
+                        <div className="mt-3 flex gap-2">
+                          <button
+                            type="button"
+                            className="btn-primary px-3 py-1.5 text-xs"
+                            onClick={() =>
+                              setApprovalToDecide({
+                                id: approval.id,
+                                approved: true,
+                                title: approval.title,
+                              })
+                            }
+                          >
+                            Valider
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-secondary px-3 py-1.5 text-xs"
+                            onClick={() =>
+                              setApprovalToDecide({
+                                id: approval.id,
+                                approved: false,
+                                title: approval.title,
+                              })
+                            }
+                          >
+                            Refuser
+                          </button>
+                        </div>
+                      )}
                     </li>
                   );
                 })}
@@ -781,14 +794,23 @@ export default function OrderDetailPage() {
         danger={!approvalToDecide?.approved}
         onConfirm={() => {
           if (approvalToDecide) {
-            decideApproval(
-              approvalToDecide.id,
-              approvalToDecide.approved,
-              "Responsable magasin",
-            );
-            notify(
-              approvalToDecide.approved ? "Demande validée." : "Demande refusée.",
-            );
+            try {
+              decideApproval(
+                approvalToDecide.id,
+                approvalToDecide.approved,
+                "Responsable magasin",
+              );
+              notify(
+                approvalToDecide.approved ? "Demande validée." : "Demande refusée.",
+              );
+            } catch (err) {
+              notify(
+                err instanceof BusinessError
+                  ? err.message
+                  : "Impossible de traiter la demande.",
+                "error",
+              );
+            }
           }
           setApprovalToDecide(null);
         }}

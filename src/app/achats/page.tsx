@@ -10,6 +10,8 @@ import { LoadingState } from "@/components/ui/LoadingState";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { ViewTabs } from "@/components/ui/ViewTabs";
+import { SupplierOrderInfoTable } from "@/components/SupplierOrderInfoTable";
+import { buildSupplierOrderInfo } from "@/lib/supplierOrderInfo";
 import { formatDate, formatDateTime } from "@/lib/format";
 import {
   approvalStatusLabels,
@@ -212,15 +214,7 @@ export default function PurchasesPage() {
                     </p>
                     <p className="mt-2 text-sm">{approval.description}</p>
                     {so ? (
-                      <ul className="mt-2 text-sm" style={{ color: "var(--muted)" }}>
-                        {so.lines.map((l) => (
-                          <li key={l.id}>
-                            {l.quantity} × {l.productName}
-                            {l.variant ? ` (${l.variant})` : ""}
-                            {l.supplierReference ? ` — réf. ${l.supplierReference}` : ""}
-                          </li>
-                        ))}
-                      </ul>
+                      <SupplierOrderInfoTable info={buildSupplierOrderInfo(db, so)} />
                     ) : null}
                   </div>
                   <div className="flex gap-2">

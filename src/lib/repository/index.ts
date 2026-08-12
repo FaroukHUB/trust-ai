@@ -24,6 +24,30 @@ export interface DataRepository {
 const STORAGE_KEY = "trust-ai:db";
 
 /**
+ * Migration v2 → v3 (correctif financier V1.2).
+ *
+ * Aucune donnée n'est transformée : les totaux des commandes (y compris
+ * annulées) ne sont JAMAIS stockés, ils sont dérivés des lignes, remises
+ * et frais existants — la correction du calcul historique s'applique donc
+ * automatiquement aux anciennes commandes annulées. La migration conserve
+ * intégralement commandes, clients, règlements, validations et historiques
+ * créés pendant les tests (aucun doublon, idempotente), et complète
+ * simplement les collections manquantes depuis le seed si besoin.
+ */
+export function migrateV2toV3(old: Database): Database {
+  const fresh = createSeed();
+  const migrated: Database = {
+    ...old,
+    version: SEED_VERSION,
+    // Collections ajoutées en v2 : présentes normalement, complétées sinon.
+    userProfiles: old.userProfiles ?? fresh.userProfiles,
+    products: old.products ?? fresh.products,
+    productVariants: old.productVariants ?? fresh.productVariants,
+  };
+  return migrated;
+}
+
+/**
  * Migration v1 → v2 (ajout du catalogue produits et des profils employés).
  *
  * Principe : on repart du seed v2 (qui contient le catalogue) et on
@@ -34,7 +58,7 @@ const STORAGE_KEY = "trust-ai:db";
  * session sont aléatoires, ce qui permet de les distinguer sans risque.
  * Aucune donnée n'est réinitialisée silencieusement.
  */
-function migrateV1toV2(old: Database): Database {
+export function migrateV1toV2(old: Database): Database {
   const fresh = createSeed();
   try {
     const seedOrderIds = new Set(fresh.orders.map((o) => o.id));
@@ -88,7 +112,13 @@ export class LocalStorageRepository implements DataRepository {
       if (!parsed || typeof parsed.version !== "number") return this.reset();
       if (parsed.version === SEED_VERSION) return parsed;
       if (parsed.version === 1) {
-        const migrated = migrateV1toV2(parsed);
+        // Chaîne v1 → v2 → v3 (migrateV1toV2 repart du seed courant).
+        const migrated = migrateV2toV3(migrateV1toV2(parsed));
+        this.save(migrated);
+        return migrated;
+      }
+      if (parsed.version === 2) {
+        const migrated = migrateV2toV3(parsed);
         this.save(migrated);
         return migrated;
       }

@@ -148,14 +148,20 @@ export default function DashboardPage() {
         />
         <StatCard
           label="Relances du lundi"
-          value={String(reminders.length)}
-          hint={
+          value={`${reminders.filter((r) => r.due).length} à effectuer`}
+          hint={`${reminders.filter((r) => !r.due).length} programmée(s)${
             reminders.filter((r) => r.overdueDays > 0).length > 0
-              ? `${reminders.filter((r) => r.overdueDays > 0).length} en retard`
-              : "File à jour"
-          }
+              ? ` · ${reminders.filter((r) => r.overdueDays > 0).length} en retard`
+              : ""
+          }`}
           icon={PhoneOutgoing}
-          tone={reminders.some((r) => r.overdueDays > 0) ? "danger" : "default"}
+          tone={
+            reminders.some((r) => r.overdueDays > 0)
+              ? "danger"
+              : reminders.some((r) => r.due)
+                ? "warning"
+                : "default"
+          }
         />
         <StatCard
           label="Arrivages en retard"

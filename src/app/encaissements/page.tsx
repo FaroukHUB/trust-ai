@@ -2,45 +2,30 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { Banknote, Receipt, Search, Wallet } from "lucide-react";
+import { Banknote, Receipt, RotateCcw, Search, Wallet } from "lucide-react";
 import { useData } from "@/lib/store/DataProvider";
 import { StatCard } from "@/components/ui/StatCard";
+import { Badge } from "@/components/ui/Badge";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ViewTabs } from "@/components/ui/ViewTabs";
 import { PaginationBar, usePagination } from "@/components/ui/Pagination";
-import { linesOfOrder, orderRapCents, orderTotalCents } from "@/lib/derive";
-import { fromCents, toCents } from "@/lib/money";
+import {
+  computeMonthSynthesis,
+  scopedPayments,
+  type CashScope,
+} from "@/lib/cash";
+import { orderPaid } from "@/lib/derive";
+import { fromCents } from "@/lib/money";
 import { formatDate, formatEuro } from "@/lib/format";
 import { paymentMethodLabels } from "@/lib/labels";
 import type { PaymentMethod } from "@/lib/types";
-
-const FINANCING_METHODS: PaymentMethod[] = [
-  "cofidis",
-  "pnf",
-  "alma",
-  "floa",
-  "paiement_express",
-];
 
 type ViewKey = "synthese" | "details";
 
 function currentMonth(): string {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-}
-
-interface DayRow {
-  day: string;
-  invoicedCents: number;
-  collectedCents: number;
-  cashCents: number;
-  cardCents: number;
-  transferCents: number;
-  financingCents: number;
-  creditCents: number;
-  refundCents: number;
-  rapCents: number;
 }
 
 export default function CashPage() {
@@ -53,102 +38,24 @@ export default function CashPage() {
   const [dayFilter, setDayFilter] = useState<string | "">("");
   const [search, setSearch] = useState("");
 
-  const effectiveStore = store !== "all" ? store : storeFilter;
+  const scope = useMemo<CashScope>(
+    () => ({
+      storeId: store !== "all" ? store : storeFilter,
+      salespersonId: salesperson,
+    }),
+    [store, storeFilter, salesperson],
+  );
 
-  // Périmètre commun : magasin + vendeuse/vendeur.
-  const scope = useMemo(() => {
-    if (!db) return null;
-    const matchStore = (id?: string) =>
-      effectiveStore === "all" || id === effectiveStore;
-    const orders = db.orders.filter(
-      (o) =>
-        o.status !== "annulee" &&
-        matchStore(o.storeId) &&
-        (salesperson === "all" || o.salespersonId === salesperson),
-    );
-    const payments = db.payments.filter(
-      (p) =>
-        (effectiveStore === "all" ? true : p.storeId === effectiveStore) &&
-        (salesperson === "all" || p.salespersonId === salesperson),
-    );
-    return { orders, payments };
-  }, [db, effectiveStore, salesperson]);
-
-  // Synthèse mensuelle : une ligne par journée du mois sélectionné.
-  const dayRows = useMemo<DayRow[]>(() => {
-    if (!db || !scope) return [];
-    const rows = new Map<string, DayRow>();
-    const rowFor = (day: string): DayRow => {
-      let row = rows.get(day);
-      if (!row) {
-        row = {
-          day,
-          invoicedCents: 0,
-          collectedCents: 0,
-          cashCents: 0,
-          cardCents: 0,
-          transferCents: 0,
-          financingCents: 0,
-          creditCents: 0,
-          refundCents: 0,
-          rapCents: 0,
-        };
-        rows.set(day, row);
-      }
-      return row;
-    };
-
-    for (const order of scope.orders) {
-      const day = order.orderedAt.slice(0, 10);
-      if (!day.startsWith(month)) continue;
-      const row = rowFor(day);
-      row.invoicedCents += orderTotalCents(order, linesOfOrder(db, order.id));
-      // RAP des commandes créées ce jour-là, calculé commande par commande.
-      row.rapCents += Math.max(
-        0,
-        orderRapCents(order, db.orderLines, db.payments),
-      );
-    }
-    for (const payment of scope.payments) {
-      const day = payment.date.slice(0, 10);
-      if (!day.startsWith(month)) continue;
-      const row = rowFor(day);
-      const cents = toCents(payment.amount);
-      row.collectedCents += cents;
-      if (cents < 0) {
-        row.refundCents += cents;
-      } else if (payment.method === "especes") {
-        row.cashCents += cents;
-      } else if (payment.method === "carte_bancaire") {
-        row.cardCents += cents;
-      } else if (payment.method === "virement") {
-        row.transferCents += cents;
-      } else if (FINANCING_METHODS.includes(payment.method)) {
-        row.financingCents += cents;
-      } else if (payment.method === "avoir") {
-        row.creditCents += cents;
-      }
-    }
-    return Array.from(rows.values()).sort((a, b) => b.day.localeCompare(a.day));
-  }, [db, scope, month]);
-
-  const monthTotals = useMemo(() => {
-    return dayRows.reduce(
-      (acc, r) => ({
-        invoicedCents: acc.invoicedCents + r.invoicedCents,
-        collectedCents: acc.collectedCents + r.collectedCents,
-        rapCents: acc.rapCents + r.rapCents,
-        refundCents: acc.refundCents + r.refundCents,
-      }),
-      { invoicedCents: 0, collectedCents: 0, rapCents: 0, refundCents: 0 },
-    );
-  }, [dayRows]);
+  const synthesis = useMemo(
+    () => (db ? computeMonthSynthesis(db, month, scope) : null),
+    [db, month, scope],
+  );
 
   // Détail des règlements (paginé).
   const detailPayments = useMemo(() => {
-    if (!db || !scope) return [];
+    if (!db) return [];
     const q = search.trim().toLowerCase();
-    return scope.payments
+    return scopedPayments(db, scope)
       .filter((p) => {
         const day = p.date.slice(0, 10);
         if (dayFilter) return day === dayFilter;
@@ -172,7 +79,9 @@ export default function CashPage() {
 
   const pagination = usePagination(detailPayments);
 
-  if (!db || !scope) return <LoadingState />;
+  if (!db || !synthesis) return <LoadingState />;
+
+  const totals = synthesis.totals;
 
   return (
     <div className="flex flex-col gap-5">
@@ -180,8 +89,9 @@ export default function CashPage() {
         <h1 className="text-xl font-bold">Encaissements</h1>
         <p className="text-sm" style={{ color: "var(--muted)" }}>
           Récapitulatif calculé automatiquement depuis les commandes et les
-          règlements — aucune double saisie. « Facturé » : commandes créées
-          dans la période. « Encaissé » : règlements datés de la période.
+          règlements. « Facturé actif » : commandes non annulées créées dans
+          la période. « Encaissé brut » : tous les règlements reçus dans la
+          période, y compris ceux de commandes annulées ensuite.
         </p>
       </div>
 
@@ -259,34 +169,44 @@ export default function CashPage() {
         ) : null}
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <StatCard
-          label="Montant facturé (mois)"
-          value={formatEuro(fromCents(monthTotals.invoicedCents))}
+          label="Facturé actif (mois)"
+          value={formatEuro(fromCents(totals.invoicedCents))}
           icon={Receipt}
+          hint="Commandes non annulées créées dans la période"
         />
         <StatCard
-          label="Encaissé (mois)"
-          value={formatEuro(fromCents(monthTotals.collectedCents))}
+          label="Encaissé brut (mois)"
+          value={formatEuro(fromCents(totals.collectedCents))}
           icon={Wallet}
           tone="success"
+          hint="Tous les règlements reçus, y compris commandes annulées ensuite"
         />
         <StatCard
-          label="RAP des commandes du mois"
-          value={formatEuro(fromCents(monthTotals.rapCents))}
+          label="RAP actif des commandes du mois"
+          value={formatEuro(fromCents(totals.rapCents))}
           icon={Banknote}
-          tone={monthTotals.rapCents > 0 ? "warning" : "success"}
-          hint="Calculé commande par commande"
+          tone={totals.rapCents > 0 ? "warning" : "success"}
+          hint="Commandes non annulées uniquement, calcul commande par commande"
         />
         <StatCard
-          label="Remboursements / dépenses"
-          value={formatEuro(fromCents(monthTotals.refundCents))}
-          tone={monthTotals.refundCents < 0 ? "danger" : "default"}
+          label="Remboursements / avoirs à traiter"
+          value={formatEuro(fromCents(totals.toTreatCents))}
+          icon={RotateCcw}
+          tone={totals.toTreatCents > 0 ? "danger" : "default"}
+          hint="Encaissements du mois sur commandes annulées, non traités"
+        />
+        <StatCard
+          label="Remboursements / avoirs effectués"
+          value={formatEuro(fromCents(totals.refundDoneCents))}
+          tone={totals.refundDoneCents < 0 ? "danger" : "default"}
+          hint="Uniquement les opérations réellement enregistrées"
         />
       </div>
 
       {view === "synthese" ? (
-        dayRows.length === 0 ? (
+        synthesis.rows.length === 0 ? (
           <EmptyState
             title="Aucune activité sur ce mois"
             description="Changez de mois ou de filtres pour voir les journées."
@@ -297,14 +217,15 @@ export default function CashPage() {
               <thead>
                 <tr>
                   <th scope="col">Date</th>
-                  <th scope="col">Facturé</th>
-                  <th scope="col">Encaissé</th>
+                  <th scope="col">Facturé actif</th>
+                  <th scope="col">Encaissé brut</th>
                   <th scope="col">Espèces</th>
                   <th scope="col">Carte</th>
                   <th scope="col">Virement</th>
                   <th scope="col">Financements</th>
                   <th scope="col">Avoirs</th>
-                  <th scope="col">Remb. / dépenses</th>
+                  <th scope="col">Remb. effectués</th>
+                  <th scope="col">À traiter</th>
                   <th scope="col">RAP du jour</th>
                   <th scope="col">
                     <span className="sr-only">Actions</span>
@@ -312,7 +233,7 @@ export default function CashPage() {
                 </tr>
               </thead>
               <tbody>
-                {dayRows.map((row) => (
+                {synthesis.rows.map((row) => (
                   <tr key={row.day}>
                     <td className="whitespace-nowrap font-medium">
                       {formatDate(`${row.day}T12:00:00`)}
@@ -337,10 +258,18 @@ export default function CashPage() {
                     <td
                       className="whitespace-nowrap"
                       style={{
-                        color: row.refundCents < 0 ? "var(--danger)" : undefined,
+                        color: row.refundDoneCents < 0 ? "var(--danger)" : undefined,
                       }}
                     >
-                      {formatEuro(fromCents(row.refundCents))}
+                      {formatEuro(fromCents(row.refundDoneCents))}
+                    </td>
+                    <td
+                      className="whitespace-nowrap"
+                      style={{
+                        color: row.toTreatCents > 0 ? "var(--danger)" : undefined,
+                      }}
+                    >
+                      {formatEuro(fromCents(row.toTreatCents))}
                     </td>
                     <td
                       className="whitespace-nowrap"
@@ -426,18 +355,28 @@ export default function CashPage() {
                     const cashier = db.salespeople.find(
                       (s) => s.id === payment.salespersonId,
                     )?.name;
+                    const cancelled =
+                      order?.status === "annulee" &&
+                      orderPaid(order, db.payments) > 0;
                     return (
                       <tr key={payment.id}>
                         <td className="whitespace-nowrap">{formatDate(payment.date)}</td>
                         <td>
                           {order ? (
-                            <Link
-                              href={`/commandes/${order.id}`}
-                              className="font-medium"
-                              style={{ color: "var(--primary)" }}
-                            >
-                              {order.reference}
-                            </Link>
+                            <span className="flex flex-wrap items-center gap-1.5">
+                              <Link
+                                href={`/commandes/${order.id}`}
+                                className="font-medium"
+                                style={{ color: "var(--primary)" }}
+                              >
+                                {order.reference}
+                              </Link>
+                              {cancelled ? (
+                                <Badge tone="danger">
+                                  Commande annulée — à traiter
+                                </Badge>
+                              ) : null}
+                            </span>
                           ) : (
                             "—"
                           )}

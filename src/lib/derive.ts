@@ -27,15 +27,23 @@ export function lineTotal(line: OrderLine): number {
   return fromCents(lineTotalCents(line));
 }
 
-/** Total d'une commande en centimes. */
+/**
+ * Total HISTORIQUE d'une commande en centimes.
+ *
+ * Règle métier : une annulation modifie les statuts, jamais l'historique
+ * financier. Le total est donc calculé à partir de TOUTES les lignes
+ * initiales — y compris celles passées en statut « Annulé » — avec les
+ * remises et frais de livraison d'origine. Une commande de 450 € annulée
+ * affiche toujours 450 €, jamais 0 €.
+ */
 export function orderTotalCents(order: Order, lines: OrderLine[]): number {
   const items = lines
-    .filter((l) => l.orderId === order.id && l.procurementStatus !== "annule")
+    .filter((l) => l.orderId === order.id)
     .reduce((sum, l) => sum + lineTotalCents(l), 0);
   return items - toCents(order.discount || 0) + toCents(order.deliveryFee || 0);
 }
 
-/** Total d'une commande : somme des lignes − remise globale + frais de livraison. */
+/** Total historique d'une commande : somme des lignes − remise globale + frais de livraison. */
 export function orderTotal(order: Order, lines: OrderLine[]): number {
   return fromCents(orderTotalCents(order, lines));
 }
@@ -52,12 +60,18 @@ export function orderPaid(order: Order, payments: Payment[]): number {
   return fromCents(orderPaidCents(order, payments));
 }
 
-/** RAP en centimes = total de la commande − règlements encaissés. */
+/**
+ * RAP en centimes = total de la commande − règlements encaissés.
+ * Une commande annulée n'a plus rien à payer : son RAP vaut toujours 0
+ * (le montant encaissé devient un remboursement/avoir à traiter, jamais
+ * un reste à payer).
+ */
 export function orderRapCents(
   order: Order,
   lines: OrderLine[],
   payments: Payment[],
 ): number {
+  if (order.status === "annulee") return 0;
   return orderTotalCents(order, lines) - orderPaidCents(order, payments);
 }
 
@@ -87,7 +101,12 @@ export function globalRap(orders: Order[], db: Database): number {
   return fromCents(cents);
 }
 
-/** Statut de paiement, toujours calculé à partir du total et des règlements. */
+/**
+ * Statut financier, toujours calculé à partir du total et des règlements.
+ * Une commande annulée ne porte jamais le badge « Payé » : elle affiche
+ * « Remboursement ou avoir à traiter » (si un règlement existe) ou
+ * « Aucun remboursement nécessaire ».
+ */
 export function orderPaymentStatus(
   order: Order,
   lines: OrderLine[],
@@ -95,7 +114,9 @@ export function orderPaymentStatus(
 ): PaymentStatus {
   const total = orderTotalCents(order, lines);
   const paid = orderPaidCents(order, payments);
-  if (order.status === "annulee" && paid <= 0) return "rembourse";
+  if (order.status === "annulee") {
+    return paid > 0 ? "remboursement_a_traiter" : "sans_objet";
+  }
   if (paid <= 0) return "a_payer";
   if (paid >= total) return "paye";
   return "partiellement_paye";

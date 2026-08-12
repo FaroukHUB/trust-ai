@@ -325,22 +325,38 @@ export function requestOrderCancellationM(
 // Décision sur une demande de validation
 // ---------------------------------------------------------------------------
 
+export interface DecideApprovalOptions {
+  /**
+   * Date d'arrivée estimée confirmée ou ajustée par le responsable lors de
+   * la validation d'une commande fournisseur (ISO).
+   */
+  expectedAt?: string;
+}
+
 export function decideApprovalM(
   db: Database,
   requestId: string,
   approved: boolean,
   actor: string,
   reason?: string,
+  options?: DecideApprovalOptions,
 ): void {
   const request = db.approvalRequests.find((r) => r.id === requestId);
   if (!request) throw new BusinessError("Demande introuvable.");
   if (request.status !== "en_attente") {
     throw new BusinessError("Cette demande a déjà été traitée.");
   }
+  // Décision sur une annulation : le motif est OBLIGATOIRE, que la demande
+  // soit validée ou refusée (traçabilité de l'impact financier).
+  if (request.type === "annulation_commande" && !reason?.trim()) {
+    throw new BusinessError(
+      "Le motif est obligatoire pour valider ou refuser une annulation de commande.",
+    );
+  }
   request.status = approved ? "approuvee" : "refusee";
   request.decidedAt = new Date().toISOString();
   request.decidedBy = actor;
-  request.decisionReason = reason || undefined;
+  request.decisionReason = reason?.trim() || undefined;
 
   // Effets internes selon le type de demande (aucune action externe réelle).
   if (request.relatedSupplierOrderId) {
@@ -352,6 +368,25 @@ export function decideApprovalM(
       if (approved) {
         so.validatedAt = new Date().toISOString();
         so.validatedBy = actor;
+        // Date d'arrivée estimée : valeur ajustée par le responsable,
+        // sinon celle déjà connue, sinon calculée depuis le délai habituel
+        // du fournisseur à partir de la date de validation.
+        if (options?.expectedAt) {
+          so.expectedAt = options.expectedAt;
+        } else if (!so.expectedAt) {
+          const supplier = db.suppliers.find((s) => s.id === so.supplierId);
+          if (supplier?.leadTimeDays) {
+            const d = new Date();
+            d.setDate(d.getDate() + supplier.leadTimeDays);
+            so.expectedAt = d.toISOString();
+          }
+        }
+        for (const sol of so.lines) {
+          const line = db.orderLines.find((l) => l.id === sol.orderLineId);
+          if (line && so.expectedAt && !line.expectedArrival) {
+            line.expectedArrival = so.expectedAt;
+          }
+        }
       }
       for (const sol of so.lines) {
         const line = db.orderLines.find((l) => l.id === sol.orderLineId);

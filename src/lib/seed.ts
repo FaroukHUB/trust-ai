@@ -9,7 +9,7 @@ import type { Database } from "./types";
  * reste vivante (commandes du jour, retards, relances...).
  */
 
-export const SEED_VERSION = 2;
+export const SEED_VERSION = 3;
 
 function iso(d: Date): string {
   return d.toISOString();

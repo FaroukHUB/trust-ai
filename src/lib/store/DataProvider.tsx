@@ -21,6 +21,7 @@ import {
   receiveShipmentM,
   requestOrderCancellationM,
   updateLineStatusM,
+  type DecideApprovalOptions,
   type NewStoreOrderInput,
   type PaymentInput,
 } from "../mutations";
@@ -48,6 +49,7 @@ interface DataContextValue {
     approved: boolean,
     actor: string,
     reason?: string,
+    options?: DecideApprovalOptions,
   ) => void;
   requestOrderCancellation: (orderId: string) => void;
   updateLineStatus: (lineId: string, status: ProcurementStatus) => void;
@@ -128,8 +130,14 @@ export function DataProvider({ children }: { children: ReactNode }) {
   );
 
   const decideApproval = useCallback(
-    (requestId: string, approved: boolean, actor: string, reason?: string) => {
-      apply((d) => decideApprovalM(d, requestId, approved, actor, reason));
+    (
+      requestId: string,
+      approved: boolean,
+      actor: string,
+      reason?: string,
+      options?: DecideApprovalOptions,
+    ) => {
+      apply((d) => decideApprovalM(d, requestId, approved, actor, reason, options));
     },
     [apply],
   );

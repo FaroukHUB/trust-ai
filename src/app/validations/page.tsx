@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { CheckSquare, X } from "lucide-react";
+import { AlertTriangle, CheckSquare, X } from "lucide-react";
 import { useData, BusinessError } from "@/lib/store/DataProvider";
 import { useToast } from "@/components/ui/Toast";
 import { Badge } from "@/components/ui/Badge";
@@ -10,6 +10,9 @@ import { LoadingState } from "@/components/ui/LoadingState";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ViewTabs } from "@/components/ui/ViewTabs";
 import { PaginationBar, usePagination } from "@/components/ui/Pagination";
+import { SupplierOrderInfoTable } from "@/components/SupplierOrderInfoTable";
+import { linesOfOrder, orderPaid, orderTotal } from "@/lib/derive";
+import { buildSupplierOrderInfo } from "@/lib/supplierOrderInfo";
 import { formatDateTime, formatEuro } from "@/lib/format";
 import { approvalStatusLabels, approvalTypeLabels } from "@/lib/labels";
 import type { ApprovalRequest } from "@/lib/types";
@@ -27,6 +30,8 @@ export default function ApprovalsPage() {
   const [view, setView] = useState<ViewKey>("en_attente");
   const [decision, setDecision] = useState<Decision | null>(null);
   const [reason, setReason] = useState("");
+  const [expectedAt, setExpectedAt] = useState("");
+  const [reasonError, setReasonError] = useState(false);
 
   const requests = useMemo(() => {
     if (!db) return [];
@@ -50,24 +55,65 @@ export default function ApprovalsPage() {
   ).length;
   const treatedCount = db.approvalRequests.length - pendingCount;
 
+  const isCancellation = decision?.request.type === "annulation_commande";
+  const decisionSupplierOrder = decision?.request.relatedSupplierOrderId
+    ? db.supplierOrders.find((o) => o.id === decision.request.relatedSupplierOrderId)
+    : undefined;
+  const decisionSupplierInfo = decisionSupplierOrder
+    ? buildSupplierOrderInfo(db, decisionSupplierOrder)
+    : undefined;
+  const decisionOrder = decision?.request.relatedOrderId
+    ? db.orders.find((o) => o.id === decision.request.relatedOrderId)
+    : undefined;
+  const decisionOrderTotal = decisionOrder
+    ? orderTotal(decisionOrder, linesOfOrder(db, decisionOrder.id))
+    : 0;
+  const decisionOrderPaid = decisionOrder ? orderPaid(decisionOrder, db.payments) : 0;
+
+  const openDecision = (request: ApprovalRequest, approved: boolean) => {
+    setReason("");
+    setReasonError(false);
+    // Préremplir la date d'arrivée estimée pour une commande fournisseur.
+    if (request.relatedSupplierOrderId && approved) {
+      const so = db.supplierOrders.find(
+        (o) => o.id === request.relatedSupplierOrderId,
+      );
+      const info = so ? buildSupplierOrderInfo(db, so) : undefined;
+      setExpectedAt(info?.estimatedArrival ? info.estimatedArrival.slice(0, 10) : "");
+    } else {
+      setExpectedAt("");
+    }
+    setDecision({ request, approved });
+  };
+
   const confirmDecision = () => {
     if (!decision) return;
+    // Motif obligatoire pour toute décision sur une annulation (la même
+    // règle est appliquée côté mutation : la protection n'est pas
+    // seulement visuelle).
+    if (isCancellation && !reason.trim()) {
+      setReasonError(true);
+      return;
+    }
     try {
       decideApproval(
         decision.request.id,
         decision.approved,
         "Responsable magasin",
         reason.trim() || undefined,
+        decision.approved && expectedAt
+          ? { expectedAt: new Date(`${expectedAt}T12:00:00`).toISOString() }
+          : undefined,
       );
       notify(decision.approved ? "Demande validée." : "Demande refusée.");
+      setDecision(null);
+      setReason("");
     } catch (e) {
       notify(
         e instanceof BusinessError ? e.message : "Impossible de traiter la demande.",
         "error",
       );
     }
-    setDecision(null);
-    setReason("");
   };
 
   return (
@@ -119,7 +165,7 @@ export default function ApprovalsPage() {
             return (
               <div key={request.id} className="card p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge tone="neutral">{approvalTypeLabels[request.type]}</Badge>
                       <Badge tone={status.tone}>{status.label}</Badge>
@@ -178,15 +224,9 @@ export default function ApprovalsPage() {
                       ) : null}
                     </dl>
                     {supplierOrder ? (
-                      <ul className="mt-2 text-sm" style={{ color: "var(--muted)" }}>
-                        {supplierOrder.lines.map((l) => (
-                          <li key={l.id}>
-                            {l.quantity} × {l.productName}
-                            {l.variant ? ` (${l.variant})` : ""}
-                            {l.supplierReference ? ` — réf. ${l.supplierReference}` : ""}
-                          </li>
-                        ))}
-                      </ul>
+                      <SupplierOrderInfoTable
+                        info={buildSupplierOrderInfo(db, supplierOrder)}
+                      />
                     ) : null}
                     {request.decisionReason ? (
                       <p className="mt-2 text-sm italic" style={{ color: "var(--muted)" }}>
@@ -199,14 +239,14 @@ export default function ApprovalsPage() {
                       <button
                         type="button"
                         className="btn-primary"
-                        onClick={() => setDecision({ request, approved: true })}
+                        onClick={() => openDecision(request, true)}
                       >
                         Valider
                       </button>
                       <button
                         type="button"
                         className="btn-secondary"
-                        onClick={() => setDecision({ request, approved: false })}
+                        onClick={() => openDecision(request, false)}
                       >
                         Refuser
                       </button>
@@ -229,7 +269,7 @@ export default function ApprovalsPage() {
         </div>
       )}
 
-      {/* Dialogue de décision avec motif */}
+      {/* Dialogue de décision — récapitulatif impossible à confondre */}
       {decision ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -242,10 +282,16 @@ export default function ApprovalsPage() {
             onClick={() => setDecision(null)}
             aria-hidden
           />
-          <div className="card relative w-full max-w-md p-5 shadow-xl">
+          <div className="card relative max-h-[90vh] w-full max-w-lg overflow-y-auto p-5 shadow-xl">
             <div className="flex items-start justify-between gap-3">
               <h2 id="decision-title" className="text-base font-semibold">
-                {decision.approved ? "Valider cette demande ?" : "Refuser cette demande ?"}
+                {isCancellation
+                  ? decision.approved
+                    ? "Valider l'ANNULATION de cette commande ?"
+                    : "Refuser l'annulation de cette commande ?"
+                  : decision.approved
+                    ? "Valider cette demande ?"
+                    : "Refuser cette demande ?"}
               </h2>
               <button
                 type="button"
@@ -260,21 +306,102 @@ export default function ApprovalsPage() {
               {decision.request.title} — aucune action extérieure réelle ne sera
               exécutée : seul le suivi interne sera mis à jour.
             </p>
+
+            {/* Récapitulatif très visible pour une annulation */}
+            {isCancellation && decisionOrder ? (
+              <div
+                className="mt-4 rounded-md border p-3"
+                style={{ borderColor: "var(--danger)", background: "var(--danger-soft)" }}
+              >
+                <p
+                  className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide"
+                  style={{ color: "var(--danger)" }}
+                >
+                  <AlertTriangle size={14} aria-hidden />
+                  Annulation de commande — vérifiez ces informations
+                </p>
+                <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
+                  <dt style={{ color: "var(--muted)" }}>Commande</dt>
+                  <dd className="font-semibold">{decisionOrder.reference}</dd>
+                  <dt style={{ color: "var(--muted)" }}>Client</dt>
+                  <dd className="font-semibold">
+                    {db.customers.find((c) => c.id === decisionOrder.customerId)?.name ?? "—"}
+                  </dd>
+                  <dt style={{ color: "var(--muted)" }}>Magasin</dt>
+                  <dd>
+                    {db.stores.find((s) => s.id === decisionOrder.storeId)?.name ??
+                      "Commande en ligne"}
+                  </dd>
+                  <dt style={{ color: "var(--muted)" }}>Total historique</dt>
+                  <dd className="font-semibold">{formatEuro(decisionOrderTotal)}</dd>
+                  <dt style={{ color: "var(--muted)" }}>Déjà encaissé</dt>
+                  <dd className="font-semibold">{formatEuro(decisionOrderPaid)}</dd>
+                  <dt style={{ color: "var(--muted)" }}>
+                    À rembourser ou transformer en avoir
+                  </dt>
+                  <dd className="font-bold" style={{ color: "var(--danger)" }}>
+                    {formatEuro(Math.max(0, decisionOrderPaid))}
+                  </dd>
+                </dl>
+                <p className="mt-2 text-xs" style={{ color: "var(--muted)" }}>
+                  Le total historique et les règlements sont conservés. Aucun
+                  remboursement réel n&apos;est effectué par l&apos;application.
+                </p>
+              </div>
+            ) : null}
+
+            {/* Récapitulatif commande fournisseur + date d'arrivée modifiable */}
+            {decisionSupplierInfo ? (
+              <>
+                <SupplierOrderInfoTable info={decisionSupplierInfo} />
+                {decision.approved ? (
+                  <label className="mt-3 block">
+                    <span className="field-label">
+                      Date d&apos;arrivée estimée (modifiable avant validation)
+                    </span>
+                    <input
+                      type="date"
+                      className="field-input"
+                      value={expectedAt}
+                      onChange={(e) => setExpectedAt(e.target.value)}
+                    />
+                    {decisionSupplierInfo.estimatedArrivalComputed ? (
+                      <span className="field-hint">
+                        Proposée à partir du délai habituel du fournisseur.
+                      </span>
+                    ) : null}
+                  </label>
+                ) : null}
+              </>
+            ) : null}
+
             <label className="mt-4 block">
               <span className="field-label">
-                Motif {decision.approved ? "(facultatif)" : "(recommandé)"}
+                Motif {isCancellation ? "(obligatoire)" : "(facultatif)"}
               </span>
               <textarea
                 className="field-input"
                 rows={2}
                 value={reason}
-                onChange={(e) => setReason(e.target.value)}
+                onChange={(e) => {
+                  setReason(e.target.value);
+                  if (e.target.value.trim()) setReasonError(false);
+                }}
+                aria-required={isCancellation}
+                aria-invalid={reasonError}
                 placeholder={
-                  decision.approved
-                    ? "Commentaire éventuel…"
-                    : "Pourquoi cette demande est-elle refusée ?"
+                  isCancellation
+                    ? "Motif de la décision (obligatoire pour une annulation)…"
+                    : decision.approved
+                      ? "Commentaire éventuel…"
+                      : "Pourquoi cette demande est-elle refusée ?"
                 }
               />
+              {reasonError ? (
+                <span className="mt-1 block text-xs font-medium" style={{ color: "var(--danger)" }}>
+                  Le motif est obligatoire pour valider ou refuser une annulation.
+                </span>
+              ) : null}
             </label>
             <div className="mt-4 flex justify-end gap-2">
               <button type="button" className="btn-secondary" onClick={() => setDecision(null)}>
@@ -282,10 +409,17 @@ export default function ApprovalsPage() {
               </button>
               <button
                 type="button"
-                className={decision.approved ? "btn-primary" : "btn-danger"}
+                className={
+                  decision.approved && !isCancellation ? "btn-primary" : "btn-danger"
+                }
                 onClick={confirmDecision}
+                disabled={isCancellation && !reason.trim()}
               >
-                {decision.approved ? "Valider" : "Refuser"}
+                {isCancellation && decision.approved
+                  ? "Valider l'annulation"
+                  : decision.approved
+                    ? "Valider"
+                    : "Refuser"}
               </button>
             </div>
           </div>

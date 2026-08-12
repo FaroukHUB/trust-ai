@@ -92,6 +92,11 @@ export const paymentStatusLabels: Record<
   partiellement_paye: { label: "Partiellement payé", tone: "warning" },
   paye: { label: "Payé", tone: "success" },
   rembourse: { label: "Remboursé", tone: "neutral" },
+  remboursement_a_traiter: {
+    label: "Remboursement ou avoir à traiter",
+    tone: "danger",
+  },
+  sans_objet: { label: "Aucun remboursement nécessaire", tone: "neutral" },
 };
 
 export const paymentMethodLabels: Record<PaymentMethod, string> = {

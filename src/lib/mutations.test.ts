@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { createSeed } from "./seed";
+import { createSeed, SEED_VERSION } from "./seed";
 import {
   BusinessError,
   addPaymentM,
@@ -12,9 +12,14 @@ import {
 import {
   computeReminders,
   globalRap,
+  orderPaymentStatus,
   orderRap,
+  orderTotal,
   refundAlerts,
 } from "./derive";
+import { computeMonthSynthesis } from "./cash";
+import { buildSupplierOrderInfo } from "./supplierOrderInfo";
+import { migrateV2toV3 } from "./repository";
 import { addAmounts } from "./money";
 import type { Database } from "./types";
 
@@ -123,7 +128,7 @@ describe("Annulation avec validation humaine", () => {
       (p) => p.orderId === "ord-mag-her-1",
     ).length;
 
-    decideApprovalM(db, request.id, true, "Julie Mancini");
+    decideApprovalM(db, request.id, true, "Julie Mancini", "Client parti à la concurrence");
 
     const order = db.orders.find((o) => o.id === "ord-mag-her-1")!;
     expect(order.status).toBe("annulee");
@@ -170,8 +175,26 @@ describe("Annulation avec validation humaine", () => {
     const request = db.approvalRequests.find(
       (r) => r.type === "annulation_commande" && r.relatedOrderId === "ord-mag-her-1",
     )!;
-    decideApprovalM(db, request.id, false, "Julie Mancini");
-    expect(() => decideApprovalM(db, request.id, true, "X")).toThrow(/déjà été traitée/);
+    decideApprovalM(db, request.id, false, "Julie Mancini", "Erreur de saisie");
+    expect(() => decideApprovalM(db, request.id, true, "X", "motif")).toThrow(
+      /déjà été traitée/,
+    );
+  });
+
+  it("refuse une décision d'annulation sans motif (validation ET refus)", () => {
+    requestOrderCancellationM(db, "ord-mag-her-1");
+    const request = db.approvalRequests.find(
+      (r) => r.type === "annulation_commande" && r.relatedOrderId === "ord-mag-her-1",
+    )!;
+    expect(() => decideApprovalM(db, request.id, true, "Julie Mancini")).toThrow(
+      /motif est obligatoire/,
+    );
+    expect(() => decideApprovalM(db, request.id, false, "Julie Mancini", "  ")).toThrow(
+      /motif est obligatoire/,
+    );
+    // La demande reste en attente : rien n'a été modifié.
+    expect(request.status).toBe("en_attente");
+    expect(db.orders.find((o) => o.id === "ord-mag-her-1")!.status).toBe("ouverte");
   });
 });
 
@@ -350,5 +373,214 @@ describe("Référentiel magasins / dépôts", () => {
     const aubagne = db.stores.find((s) => s.code === "AUB")!;
     expect(aubagne.name).toContain("Aubagne");
     expect(aubagne.aliases).toContain("Marseille");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V1.2 — correctif financier des commandes annulées
+// ---------------------------------------------------------------------------
+
+function cancelOrder(database: Database, orderId: string, motif = "Test V1.2") {
+  requestOrderCancellationM(database, orderId);
+  const request = database.approvalRequests.find(
+    (r) => r.type === "annulation_commande" && r.relatedOrderId === orderId,
+  )!;
+  decideApprovalM(database, request.id, true, "Julie Mancini", motif);
+}
+
+describe("V1.2 — historique financier des commandes annulées", () => {
+  it("le total historique reste identique avant et après annulation", () => {
+    const order = db.orders.find((o) => o.id === "ord-mag-her-1")!;
+    const before = orderTotal(order, db.orderLines);
+    expect(before).toBe(1824);
+    cancelOrder(db, "ord-mag-her-1");
+    // Les lignes sont bien passées en statut « Annulé »…
+    expect(
+      db.orderLines
+        .filter((l) => l.orderId === "ord-mag-her-1")
+        .every((l) => l.procurementStatus === "annule"),
+    ).toBe(true);
+    // …mais restent incluses dans le total historique (remise et frais compris).
+    expect(orderTotal(order, db.orderLines)).toBe(before);
+  });
+
+  it("le RAP d'une commande annulée vaut 0 et sort du RAP global", () => {
+    const order = db.orders.find((o) => o.id === "ord-mag-her-1")!;
+    const rapBefore = orderRap(order, db.orderLines, db.payments);
+    expect(rapBefore).toBe(1324);
+    const globalBefore = globalRap(db.orders, db);
+    cancelOrder(db, "ord-mag-her-1");
+    expect(orderRap(order, db.orderLines, db.payments)).toBe(0);
+    expect(globalRap(db.orders, db)).toBeCloseTo(globalBefore - rapBefore, 2);
+  });
+
+  it("statut financier « Remboursement ou avoir à traiter » avec le montant exact", () => {
+    cancelOrder(db, "ord-mag-her-1");
+    const order = db.orders.find((o) => o.id === "ord-mag-her-1")!;
+    expect(orderPaymentStatus(order, db.orderLines, db.payments)).toBe(
+      "remboursement_a_traiter",
+    );
+    const alert = refundAlerts(db).find((a) => a.order.id === "ord-mag-her-1")!;
+    expect(alert.amount).toBe(500); // somme exacte des règlements encaissés
+  });
+
+  it("commande annulée sans règlement : aucun remboursement nécessaire", () => {
+    db.payments = db.payments.filter((p) => p.orderId !== "ord-mag-her-1");
+    cancelOrder(db, "ord-mag-her-1");
+    const order = db.orders.find((o) => o.id === "ord-mag-her-1")!;
+    expect(orderPaymentStatus(order, db.orderLines, db.payments)).toBe("sans_objet");
+    expect(refundAlerts(db).some((a) => a.order.id === "ord-mag-her-1")).toBe(false);
+  });
+
+  it("un ancien trop-perçu (2 398 € encaissés) reste conservé et à traiter en totalité", () => {
+    // Données héritées d'un ancien test : règlement poussé directement,
+    // sans passer par la validation métier actuelle.
+    db.payments.push({
+      id: "pay-legacy-overpaid",
+      orderId: "ord-mag-her-1",
+      amount: 1898,
+      date: new Date().toISOString(),
+      method: "virement",
+    });
+    // 500 + 1 898 = 2 398 € encaissés pour un total de 1 824 €.
+    cancelOrder(db, "ord-mag-her-1");
+    const alert = refundAlerts(db).find((a) => a.order.id === "ord-mag-her-1")!;
+    // Ni corrigé, ni plafonné, ni supprimé : le montant à traiter est 2 398 €.
+    expect(alert.amount).toBe(2398);
+    expect(db.payments.filter((p) => p.orderId === "ord-mag-her-1")).toHaveLength(2);
+  });
+});
+
+describe("V1.2 — synthèse des encaissements", () => {
+  it("facturé actif exclut les annulées, encaissé brut conserve les règlements reçus", () => {
+    const month = new Date().toISOString().slice(0, 7);
+    const scope = { storeId: "all", salespersonId: "all" };
+    const before = computeMonthSynthesis(db, month, scope);
+    // ord-mag-aub-2 : créée aujourd'hui, total 509 €, acompte 250 € aujourd'hui.
+    cancelOrder(db, "ord-mag-aub-2");
+    const after = computeMonthSynthesis(db, month, scope);
+    // Le facturé actif diminue du total historique de la commande annulée…
+    expect(after.totals.invoicedCents).toBe(before.totals.invoicedCents - 50900);
+    // …mais l'encaissé brut conserve les paiements réellement reçus.
+    expect(after.totals.collectedCents).toBe(before.totals.collectedCents);
+    // Le montant encaissé passe en « remboursements / avoirs à traiter ».
+    expect(after.totals.toTreatCents).toBe(before.totals.toTreatCents + 25000);
+    // Aucune opération réelle n'a été enregistrée : « effectués » inchangé.
+    expect(after.totals.refundDoneCents).toBe(before.totals.refundDoneCents);
+    // Le RAP actif ne compte plus la commande annulée.
+    expect(after.totals.rapCents).toBe(before.totals.rapCents - 25900);
+  });
+});
+
+describe("V1.2 — informations de validation d'une commande fournisseur", () => {
+  it("affiche les informations disponibles sans inventer les manquantes", () => {
+    const so = db.supplierOrders.find((s) => s.id === "so-1")!;
+    const info = buildSupplierOrderInfo(db, so);
+    expect(info.supplier?.name).toBe("GDM");
+    const line = info.lines[0];
+    // Aucun prix d'achat dans les données → rien n'est inventé.
+    expect(line.unitCost).toBeUndefined();
+    expect(line.totalCost).toBeUndefined();
+    expect(info.totalCost).toBeUndefined();
+    // Traçabilité complète vers la commande cliente.
+    expect(line.order?.reference).toBe("MAG-HER-2026-0007");
+    expect(line.customer?.name).toBe("Camille Estève");
+    // Dépôt de destination : Argenteuil (dépôt), jamais Herblay (magasin).
+    expect(line.warehouse?.id).toBe("wh-arg");
+    expect(line.warehouse?.city).toBe("Argenteuil");
+    // Date estimée existante : reprise telle quelle, pas recalculée.
+    expect(info.estimatedArrival).toBe(so.expectedAt);
+    expect(info.estimatedArrivalComputed).toBe(false);
+  });
+
+  it("calcule la date estimée depuis le délai habituel uniquement si elle est absente", () => {
+    const so = db.supplierOrders.find((s) => s.id === "so-1")!;
+    so.expectedAt = undefined;
+    const info = buildSupplierOrderInfo(db, so, new Date("2026-08-12T10:00:00"));
+    // GDM : délai habituel de 7 jours → 19/08/2026.
+    expect(info.estimatedArrivalComputed).toBe(true);
+    expect(info.estimatedArrival!.slice(0, 10)).toBe("2026-08-19");
+  });
+
+  it("la validation applique la date d'arrivée ajustée par le responsable", () => {
+    decideApprovalM(db, "apr-1", true, "Myriam Costa", undefined, {
+      expectedAt: "2026-09-01T12:00:00.000Z",
+    });
+    const so = db.supplierOrders.find((s) => s.id === "so-1")!;
+    expect(so.status).toBe("validee");
+    expect(so.expectedAt).toBe("2026-09-01T12:00:00.000Z");
+  });
+});
+
+describe("V1.2 — carte Relances du tableau de bord", () => {
+  it("distingue les relances dues des relances programmées", () => {
+    const before = computeReminders(db);
+    const dueBefore = before.filter((r) => r.due).length;
+    expect(dueBefore).toBeGreaterThan(0);
+    // « Toujours indisponible » programme le lundi suivant → sort des dues,
+    // entre dans les programmées.
+    markReminderDoneM(db, "line-her1-2", "indisponible");
+    const after = computeReminders(db);
+    const item = after.find((r) => r.line.id === "line-her1-2")!;
+    expect(item.due).toBe(false);
+    expect(after.filter((r) => r.due)).toHaveLength(dueBefore - 1);
+    expect(after.filter((r) => !r.due).length).toBeGreaterThan(0);
+  });
+});
+
+describe("V1.2 — migration v2 → v3", () => {
+  it("préserve toutes les données v2 (dont annulations de test) et reste idempotente", () => {
+    const v2 = createSeed();
+    v2.version = 2;
+    // Données créées pendant les tests v2 : commande annulée avec règlements.
+    v2.orders.push({
+      id: "ord-user-test",
+      reference: "MAG-LIS-2026-0042",
+      origin: "MAGASIN",
+      storeId: "store-lis",
+      salespersonId: "sp-nadia",
+      customerId: "cus-3",
+      orderedAt: new Date().toISOString(),
+      fulfillmentMode: "retrait_magasin",
+      deliveryStatus: "annulee",
+      deliveryFee: 199,
+      discount: 0,
+      status: "annulee",
+      createdAt: new Date().toISOString(),
+    });
+    v2.orderLines.push({
+      id: "line-user-test",
+      orderId: "ord-user-test",
+      productName: "Canapé test",
+      quantity: 1,
+      unitPrice: 1999,
+      discount: 0,
+      procurementStatus: "annule",
+    });
+    v2.payments.push({
+      id: "pay-user-test",
+      orderId: "ord-user-test",
+      amount: 2398,
+      date: new Date().toISOString(),
+      method: "carte_bancaire",
+    });
+
+    const v3 = migrateV2toV3(v2);
+    expect(v3.version).toBe(SEED_VERSION);
+    // Tout est conservé, sans doublon.
+    expect(v3.orders).toHaveLength(v2.orders.length);
+    expect(v3.payments).toHaveLength(v2.payments.length);
+    expect(v3.orders.some((o) => o.id === "ord-user-test")).toBe(true);
+    // Le total historique de la commande annulée est de nouveau correct
+    // (1 999 + 199 de frais), dérivé des lignes existantes.
+    const order = v3.orders.find((o) => o.id === "ord-user-test")!;
+    expect(orderTotal(order, v3.orderLines)).toBe(2198);
+    // Le trop-perçu historique reste à traiter en totalité.
+    expect(refundAlerts(v3).find((a) => a.order.id === "ord-user-test")!.amount).toBe(2398);
+    // Idempotence : re-migrer ne change rien.
+    const again = migrateV2toV3(v3);
+    expect(again.orders).toHaveLength(v3.orders.length);
+    expect(again.payments).toHaveLength(v3.payments.length);
+    expect(again.activityLog).toHaveLength(v3.activityLog.length);
   });
 });

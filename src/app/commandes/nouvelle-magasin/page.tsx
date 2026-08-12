@@ -140,7 +140,11 @@ export default function NewStoreOrderPage() {
   );
   const total = linesTotal - num(discount) + num(deliveryFee);
   const paid = payments.reduce((sum, p) => sum + num(p.amount), 0);
-  const rap = Math.round((total - paid) * 100) / 100;
+  // Le RAP affiché n'est JAMAIS négatif : un dépassement des règlements est
+  // signalé séparément en rouge et bloque l'enregistrement (la même règle
+  // est aussi appliquée côté mutation métier).
+  const excess = Math.max(0, Math.round((paid - total) * 100) / 100);
+  const rap = Math.max(0, Math.round((total - paid) * 100) / 100);
 
   if (!db) return <LoadingState />;
 
@@ -866,10 +870,27 @@ export default function NewStoreOrderPage() {
             </dt>
             <dd
               className="text-lg font-semibold"
-              style={{ color: rap > 0 ? "var(--danger)" : "var(--success)" }}
+              style={{
+                color:
+                  excess > 0
+                    ? "var(--danger)"
+                    : rap > 0
+                      ? "var(--danger)"
+                      : "var(--success)",
+              }}
             >
               {formatEuro(rap)}
             </dd>
+            {excess > 0 ? (
+              <p
+                className="mt-1 text-sm font-semibold"
+                style={{ color: "var(--danger)" }}
+                role="alert"
+              >
+                Le total des règlements dépasse la commande de {formatEuro(excess)}.
+                Corrigez les montants avant d&apos;enregistrer.
+              </p>
+            ) : null}
           </div>
         </dl>
       </section>
@@ -882,7 +903,16 @@ export default function NewStoreOrderPage() {
         >
           Annuler
         </button>
-        <button type="submit" className="btn-primary" disabled={submitting}>
+        <button
+          type="submit"
+          className="btn-primary"
+          disabled={submitting || excess > 0}
+          title={
+            excess > 0
+              ? "Le total des règlements dépasse la commande : corrigez les montants."
+              : undefined
+          }
+        >
           {submitting ? "Enregistrement…" : "Enregistrer la commande"}
         </button>
       </div>

@@ -301,6 +301,12 @@ export interface SupplierOrderLine {
   variant?: string;
   supplierReference?: string;
   quantity: number;
+  /**
+   * Prix d'achat unitaire (euros). Jamais inventé : absent tant que le prix
+   * n'a pas été renseigné — l'interface affiche alors un avertissement
+   * « Prix d'achat non renseigné ».
+   */
+  unitCost?: number;
 }
 
 /**
@@ -422,7 +428,11 @@ export type PaymentStatus =
   | "a_payer"
   | "partiellement_paye"
   | "paye"
-  | "rembourse";
+  | "rembourse"
+  /** Commande annulée après encaissement : remboursement ou avoir à traiter. */
+  | "remboursement_a_traiter"
+  /** Commande annulée sans aucun règlement : aucun remboursement nécessaire. */
+  | "sans_objet";
 
 /**
  * Ligne de règlement. Une commande peut avoir plusieurs règlements ;
