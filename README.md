@@ -18,6 +18,7 @@ commandes.
 npm install
 npm run dev       # http://localhost:3000
 npm run lint      # vérification ESLint
+npm run test      # tests unitaires métier (vitest)
 npm run build     # build de production (aucune variable d'environnement requise)
 ```
 
@@ -33,6 +34,8 @@ les phases suivantes (toutes vides).
 | `/commandes` | Liste des commandes (recherche, filtres, onglets Toutes / Shopify / Magasin) |
 | `/commandes/nouvelle-magasin` | Formulaire complet de commande magasin (multi-articles, multi-règlements, RAP calculé) |
 | `/commandes/[id]` | Fiche commande : suivi fournisseur par article, paiements, parcours logistique en timeline, acquisition, historique, validations |
+| `/catalogue` | Catalogue centralisé des produits et variantes (SKU, prix, fournisseurs, synchronisation Shopify simulée) |
+| `/validations` | File des demandes de validation humaine (Valider / Refuser, motif, impact financier) |
 | `/achats` | Propositions de commandes fournisseurs regroupées par fournisseur, validation humaine obligatoire |
 | `/relances` | File des relances fournisseurs du lundi, avec proposition de message |
 | `/arrivages` | Transports et arrivages par dépôt et statut, réception partielle possible |
@@ -67,8 +70,16 @@ src/
 Règles clés du prototype :
 
 - **Aucun composant métier ne lit `localStorage` directement** : tout passe
-  par `DataRepository` (versionné) via le `DataProvider`.
-- Le **RAP est toujours calculé** (`total − règlements`), jamais saisi.
+  par `DataRepository` (versionné, avec **migration v1 → v2** qui conserve
+  les commandes créées pendant la démo) via le `DataProvider`.
+- Les **règles métier vivent dans `src/lib/mutations.ts`** (couche pure,
+  testée par vitest) : un règlement doit être strictement positif, ne peut
+  jamais dépasser le RAP, et une commande soldée n'accepte plus de
+  règlement. Tous les calculs monétaires passent par des **centimes**
+  (`src/lib/money.ts`).
+- Le **RAP est toujours calculé** (`total − règlements`), jamais saisi. Le
+  RAP global est la somme des RAP positifs **commande par commande** : un
+  trop-perçu ne compense jamais le RAP d'une autre commande.
 - Chaque **article d'une commande a son propre suivi** d'approvisionnement
   (fournisseur principal/alternatif, statut, arrivée prévue, dépôt, relances).
 - Les **dépôts sont séparés des magasins** (Herblay est desservi par le dépôt
@@ -91,8 +102,14 @@ Règles clés du prototype :
 4. **WhatsApp Business** pourra envoyer les messages fournisseurs **après
    validation humaine** (les propositions de messages existent déjà dans la
    page Relances).
-5. Un **système d'authentification** protégera l'application avant toute mise
-   en production.
+5. Un **système d'authentification** (Supabase Auth) protégera l'application
+   avant toute mise en production. Les types `UserProfile`, `Role` et
+   `Permission` (`src/lib/types.ts`) sont prêts : à cette étape, **le choix
+   manuel de la vendeuse/du vendeur dans les formulaires sera remplacé par
+   l'utilisateur connecté** (nom et magasin renseignés automatiquement,
+   droits selon le rôle, saisie « hors catalogue » réservée aux
+   responsables). Cette connexion n'est pas un système de pointage : les
+   horaires d'arrivée/départ seront une fonctionnalité distincte.
 
 ## Sécurité du prototype
 

@@ -13,7 +13,7 @@ import type { Database } from "../types";
  * tout passe par le repository via le DataProvider.
  */
 export interface DataRepository {
-  /** Charge la base (ou l'initialise depuis le seed si absente/obsolète). */
+  /** Charge la base (initialisation ou migration si nécessaire). */
   load(): Database;
   /** Persiste l'état complet de la base. */
   save(db: Database): void;
@@ -22,6 +22,57 @@ export interface DataRepository {
 }
 
 const STORAGE_KEY = "trust-ai:db";
+
+/**
+ * Migration v1 → v2 (ajout du catalogue produits et des profils employés).
+ *
+ * Principe : on repart du seed v2 (qui contient le catalogue) et on
+ * conserve les données créées par l'utilisateur pendant la démo v1 —
+ * commandes magasin saisies, avec leurs lignes, règlements, clients,
+ * parcours d'acquisition et historique. Les identifiants du seed sont
+ * déterministes (« ord-sho-1 »…) alors que les identifiants créés en
+ * session sont aléatoires, ce qui permet de les distinguer sans risque.
+ * Aucune donnée n'est réinitialisée silencieusement.
+ */
+function migrateV1toV2(old: Database): Database {
+  const fresh = createSeed();
+  try {
+    const seedOrderIds = new Set(fresh.orders.map((o) => o.id));
+    const userOrders = (old.orders ?? []).filter((o) => !seedOrderIds.has(o.id));
+    if (userOrders.length === 0) return fresh;
+
+    const userOrderIds = new Set(userOrders.map((o) => o.id));
+    fresh.orders.push(...userOrders);
+    fresh.orderLines.push(
+      ...(old.orderLines ?? []).filter((l) => userOrderIds.has(l.orderId)),
+    );
+    fresh.payments.push(
+      ...(old.payments ?? []).filter((p) => userOrderIds.has(p.orderId)),
+    );
+    const seedCustomerIds = new Set(fresh.customers.map((c) => c.id));
+    fresh.customers.push(
+      ...(old.customers ?? []).filter(
+        (c) =>
+          !seedCustomerIds.has(c.id) &&
+          userOrders.some((o) => o.customerId === c.id),
+      ),
+    );
+    fresh.acquisitionJourneys.push(
+      ...(old.acquisitionJourneys ?? []).filter((j) =>
+        userOrderIds.has(j.orderId),
+      ),
+    );
+    fresh.activityLog.unshift(
+      ...(old.activityLog ?? []).filter(
+        (a) => a.orderId && userOrderIds.has(a.orderId),
+      ),
+    );
+    return fresh;
+  } catch {
+    // En cas de données corrompues, on repart du seed plutôt que de planter.
+    return createSeed();
+  }
+}
 
 export class LocalStorageRepository implements DataRepository {
   load(): Database {
@@ -34,11 +85,15 @@ export class LocalStorageRepository implements DataRepository {
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (!raw) return this.reset();
       const parsed = JSON.parse(raw) as Database;
-      // Versionnage : un changement de schéma force le rechargement du seed.
-      if (!parsed || parsed.version !== SEED_VERSION) {
-        return this.reset();
+      if (!parsed || typeof parsed.version !== "number") return this.reset();
+      if (parsed.version === SEED_VERSION) return parsed;
+      if (parsed.version === 1) {
+        const migrated = migrateV1toV2(parsed);
+        this.save(migrated);
+        return migrated;
       }
-      return parsed;
+      // Version inconnue (plus récente ou invalide) : seed propre.
+      return this.reset();
     } catch {
       return this.reset();
     }

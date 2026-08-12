@@ -21,9 +21,11 @@ import { LoadingState } from "@/components/ui/LoadingState";
 import { EmptyState } from "@/components/ui/EmptyState";
 import {
   computeReminders,
+  globalRap,
   linesOfOrder,
   orderRap,
   orderTotal,
+  refundAlerts,
 } from "@/lib/derive";
 import { formatDate, formatEuro, isToday } from "@/lib/format";
 import { deliveryStatusLabels, originLabels } from "@/lib/labels";
@@ -68,12 +70,9 @@ export default function DashboardPage() {
     (o) => o.status === "ouverte" && o.deliveryStatus === "a_planifier",
   );
 
-  const totalRap = orders
-    .filter((o) => o.status !== "annulee")
-    .reduce(
-      (sum, o) => sum + Math.max(0, orderRap(o, db.orderLines, db.payments)),
-      0,
-    );
+  // RAP global calculé commande par commande : un trop-perçu éventuel sur
+  // une commande ne diminue jamais le RAP d'une autre.
+  const totalRap = globalRap(orders, db);
 
   const paymentsToday = db.payments.filter(
     (p) =>
@@ -82,7 +81,15 @@ export default function DashboardPage() {
   );
   const cashedToday = paymentsToday.reduce((sum, p) => sum + p.amount, 0);
 
+  const refunds = refundAlerts(db).filter(
+    (a) => storeFilter === "all" || a.order.storeId === storeFilter,
+  );
+
   const alerts: { text: string; href: string }[] = [
+    ...refunds.map((a) => ({
+      text: `Remboursement ou avoir à traiter : ${formatEuro(a.amount)} (commande ${a.order.reference} annulée après encaissement).`,
+      href: `/commandes/${a.order.id}`,
+    })),
     ...reminders
       .filter((r) => r.overdueDays > 0)
       .map((r) => ({
@@ -94,8 +101,8 @@ export default function DashboardPage() {
       href: "/arrivages",
     })),
     ...pendingApprovals.map((a) => ({
-      text: `Validation en attente : ${a.title}.`,
-      href: a.relatedSupplierOrderId ? "/achats" : "/commandes",
+      text: `En attente de validation : ${a.title}.`,
+      href: "/validations",
     })),
   ];
 

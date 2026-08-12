@@ -1,26 +1,61 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import { PhoneOutgoing } from "lucide-react";
-import { useData } from "@/lib/store/DataProvider";
+import { useData, BusinessError } from "@/lib/store/DataProvider";
 import { useToast } from "@/components/ui/Toast";
 import { Badge } from "@/components/ui/Badge";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { ViewTabs } from "@/components/ui/ViewTabs";
+import { PaginationBar, usePagination } from "@/components/ui/Pagination";
 import { computeReminders } from "@/lib/derive";
-import { formatDate, formatDateLong, nextMonday } from "@/lib/format";
+import {
+  formatDate,
+  formatDateLong,
+  formatDateTime,
+  nextMonday,
+} from "@/lib/format";
 import { procurementStatusLabels } from "@/lib/labels";
+
+type ViewKey = "dues" | "programmees" | "historique";
 
 export default function RemindersPage() {
   const { db, markReminderDone } = useData();
   const { notify } = useToast();
+  const [view, setView] = useState<ViewKey>("dues");
+
+  const reminders = db ? computeReminders(db) : [];
+  const due = reminders.filter((r) => r.due);
+  const scheduled = reminders.filter((r) => !r.due);
+  const history = db
+    ? db.activityLog.filter((a) => a.action === "Relance fournisseur effectuée")
+    : [];
+  const historyPagination = usePagination(history);
 
   if (!db) return <LoadingState />;
 
-  const reminders = computeReminders(db);
+  const shown = view === "dues" ? due : view === "programmees" ? scheduled : [];
+
+  const doReminder = (lineId: string, outcome: "indisponible" | "disponible") => {
+    try {
+      markReminderDone(lineId, outcome);
+      notify(
+        outcome === "indisponible"
+          ? "Relance enregistrée — prochaine relance programmée lundi prochain."
+          : "Relance enregistrée — article disponible, proposition de commande créée (à valider dans Achats).",
+      );
+    } catch (e) {
+      notify(
+        e instanceof BusinessError ? e.message : "Impossible d'enregistrer la relance.",
+        "error",
+      );
+    }
+  };
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-5">
       <div>
         <h1 className="text-xl font-bold">Relances du lundi</h1>
         <p className="text-sm" style={{ color: "var(--muted)" }}>
@@ -30,15 +65,78 @@ export default function RemindersPage() {
         </p>
       </div>
 
-      {reminders.length === 0 ? (
+      <ViewTabs<ViewKey>
+        ariaLabel="Filtrer les relances"
+        value={view}
+        onChange={setView}
+        tabs={[
+          { key: "dues", label: "À relancer", count: due.length },
+          { key: "programmees", label: "Programmées", count: scheduled.length },
+          { key: "historique", label: "Historique", count: history.length },
+        ]}
+      />
+
+      {view === "historique" ? (
+        history.length === 0 ? (
+          <EmptyState
+            title="Aucune relance effectuée pour l'instant"
+            icon={PhoneOutgoing}
+          />
+        ) : (
+          <div className="card">
+            <ol className="flex flex-col">
+              {historyPagination.paged.map((entry) => (
+                <li
+                  key={entry.id}
+                  className="border-b p-3 last:border-b-0"
+                  style={{ borderColor: "var(--border)" }}
+                >
+                  <p className="text-sm">{entry.details}</p>
+                  <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+                    {entry.actor} · {formatDateTime(entry.at)}
+                    {entry.orderId ? (
+                      <>
+                        {" · "}
+                        <Link
+                          href={`/commandes/${entry.orderId}`}
+                          className="font-medium"
+                          style={{ color: "var(--primary)" }}
+                        >
+                          Voir la commande
+                        </Link>
+                      </>
+                    ) : null}
+                  </p>
+                </li>
+              ))}
+            </ol>
+            <PaginationBar
+              page={historyPagination.page}
+              pageCount={historyPagination.pageCount}
+              pageSize={historyPagination.pageSize}
+              total={historyPagination.total}
+              onPageChange={historyPagination.setPage}
+              onPageSizeChange={historyPagination.setPageSize}
+            />
+          </div>
+        )
+      ) : shown.length === 0 ? (
         <EmptyState
-          title="Aucune relance en attente"
-          description="Les articles à commander ou indisponibles apparaîtront automatiquement ici."
+          title={
+            view === "dues"
+              ? "Aucune relance due"
+              : "Aucune relance programmée"
+          }
+          description={
+            view === "dues"
+              ? "Les articles à commander ou indisponibles dont la relance est due apparaîtront ici."
+              : "Les relances déjà programmées pour un prochain lundi apparaîtront ici."
+          }
           icon={PhoneOutgoing}
         />
       ) : (
         <div className="flex flex-col gap-4">
-          {reminders.map(({ line, order, overdueDays }) => {
+          {shown.map(({ line, order, overdueDays }) => {
             const supplier = db.suppliers.find((s) => s.id === line.supplierId);
             const customer = db.customers.find((c) => c.id === order.customerId);
             const status = procurementStatusLabels[line.procurementStatus];
@@ -100,30 +198,24 @@ export default function RemindersPage() {
                     </div>
                   </div>
                 </div>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    onClick={() => {
-                      markReminderDone(line.id, "indisponible");
-                      notify(
-                        "Relance enregistrée — prochaine relance programmée lundi prochain.",
-                      );
-                    }}
-                  >
-                    Relance faite — toujours indisponible
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={() => {
-                      markReminderDone(line.id, "disponible");
-                      notify("Relance enregistrée — article de nouveau disponible.");
-                    }}
-                  >
-                    Relance faite — article disponible
-                  </button>
-                </div>
+                {view === "dues" ? (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      onClick={() => doReminder(line.id, "indisponible")}
+                    >
+                      Relance faite — toujours indisponible
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={() => doReminder(line.id, "disponible")}
+                    >
+                      Relance faite — article disponible
+                    </button>
+                  </div>
+                ) : null}
               </div>
             );
           })}

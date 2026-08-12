@@ -13,7 +13,7 @@ import {
   Plus,
   Truck,
 } from "lucide-react";
-import { useData, todayIso } from "@/lib/store/DataProvider";
+import { useData, todayIso, BusinessError } from "@/lib/store/DataProvider";
 import { useToast } from "@/components/ui/Toast";
 import { Badge } from "@/components/ui/Badge";
 import { LoadingState } from "@/components/ui/LoadingState";
@@ -26,6 +26,7 @@ import {
   orderPaymentStatus,
   orderRap,
   orderTotal,
+  pendingCancellation,
 } from "@/lib/derive";
 import { formatDate, formatDateTime, formatEuro } from "@/lib/format";
 import {
@@ -102,24 +103,38 @@ export default function OrderDetailPage() {
 
   const delivery = deliveryStatusLabels[order.deliveryStatus];
   const orderStatus = orderStatusLabels[order.status];
+  const cancellationPending = pendingCancellation(db, order.id);
+  // Le RAP conditionne l'ajout de règlement : commande soldée = pas de bouton.
+  const canAddPayment = order.status === "ouverte" && rap > 0;
 
   const handleAddPayment = (e: React.FormEvent) => {
     e.preventDefault();
     const amount = parseFloat(payAmount.replace(",", "."));
-    if (Number.isNaN(amount) || amount === 0) {
-      notify("Indiquez un montant de règlement valide.", "error");
+    if (Number.isNaN(amount) || amount <= 0) {
+      notify("Le montant d'un règlement doit être strictement supérieur à zéro.", "error");
       return;
     }
-    addPayment(order.id, {
-      amount,
-      date: new Date(`${payDate}T12:00:00`).toISOString(),
-      method: payMethod,
-      comment: payComment.trim() || undefined,
-    });
-    setPayAmount("");
-    setPayComment("");
-    setShowPaymentForm(false);
-    notify("Règlement enregistré, RAP mis à jour.");
+    try {
+      addPayment(order.id, {
+        amount,
+        date: new Date(`${payDate}T12:00:00`).toISOString(),
+        method: payMethod,
+        comment: payComment.trim() || undefined,
+      });
+      setPayAmount("");
+      setPayComment("");
+      setShowPaymentForm(false);
+      notify("Règlement enregistré, RAP mis à jour.");
+    } catch (err) {
+      // Règle métier violée (montant > RAP, commande soldée…) : rien n'est
+      // enregistré, le message explique précisément le refus.
+      notify(
+        err instanceof BusinessError
+          ? err.message
+          : "Impossible d'enregistrer le règlement.",
+        "error",
+      );
+    }
   };
 
   return (
@@ -146,16 +161,42 @@ export default function OrderDetailPage() {
           </p>
         </div>
         {order.status === "ouverte" ? (
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={() => setConfirmCancel(true)}
-          >
-            <Ban size={16} aria-hidden />
-            Demander l&apos;annulation
-          </button>
+          cancellationPending ? (
+            <span
+              className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-semibold"
+              style={{ background: "var(--violet-soft)", color: "var(--violet)" }}
+            >
+              <Ban size={16} aria-hidden />
+              Annulation demandée — en attente de validation
+            </span>
+          ) : (
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setConfirmCancel(true)}
+            >
+              <Ban size={16} aria-hidden />
+              Demander l&apos;annulation
+            </button>
+          )
         ) : null}
       </div>
+
+      {order.status === "annulee" && paid > 0 ? (
+        <div
+          className="rounded-md border p-3 text-sm font-medium"
+          style={{
+            borderColor: "var(--warning)",
+            background: "var(--warning-soft)",
+            color: "var(--warning)",
+          }}
+          role="alert"
+        >
+          Remboursement ou avoir à traiter : {formatEuro(paid)} — la commande a
+          été annulée après encaissement. Aucun remboursement réel n&apos;est
+          effectué par l&apos;application.
+        </div>
+      ) : null}
 
       {/* Synthèse financière */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -215,7 +256,12 @@ export default function OrderDetailPage() {
                     return (
                       <tr key={line.id}>
                         <td>
-                          <p className="font-medium">{line.productName}</p>
+                          <p className="flex flex-wrap items-center gap-1.5 font-medium">
+                            {line.productName}
+                            {line.offCatalog ? (
+                              <Badge tone="warning">Hors catalogue</Badge>
+                            ) : null}
+                          </p>
                           {line.variant ? (
                             <p className="text-xs" style={{ color: "var(--muted)" }}>
                               {line.variant}
@@ -350,7 +396,7 @@ export default function OrderDetailPage() {
           <section className="card p-4">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold">Règlements</h2>
-              {order.status === "ouverte" ? (
+              {canAddPayment ? (
                 <button
                   type="button"
                   className="btn-secondary"
@@ -359,10 +405,14 @@ export default function OrderDetailPage() {
                   <Plus size={16} aria-hidden />
                   Ajouter un règlement
                 </button>
+              ) : order.status === "ouverte" ? (
+                <p className="text-sm font-medium" style={{ color: "var(--success)" }}>
+                  Commande soldée — RAP de 0 €
+                </p>
               ) : null}
             </div>
 
-            {showPaymentForm ? (
+            {showPaymentForm && canAddPayment ? (
               <form
                 onSubmit={handleAddPayment}
                 className="mt-4 grid grid-cols-1 gap-3 rounded-md border p-3 sm:grid-cols-2 lg:grid-cols-4"
@@ -662,7 +712,7 @@ export default function OrderDetailPage() {
                             })
                           }
                         >
-                          Approuver
+                          Valider
                         </button>
                         <button
                           type="button"
@@ -703,9 +753,18 @@ export default function OrderDetailPage() {
         confirmLabel="Créer la demande"
         danger
         onConfirm={() => {
-          requestOrderCancellation(order.id);
+          try {
+            requestOrderCancellation(order.id);
+            notify("Demande d'annulation créée, en attente de validation.");
+          } catch (err) {
+            notify(
+              err instanceof BusinessError
+                ? err.message
+                : "Impossible de créer la demande.",
+              "error",
+            );
+          }
           setConfirmCancel(false);
-          notify("Demande d'annulation créée, en attente de validation.");
         }}
         onCancel={() => setConfirmCancel(false)}
       />
@@ -714,11 +773,11 @@ export default function OrderDetailPage() {
         open={approvalToDecide !== null}
         title={
           approvalToDecide?.approved
-            ? "Approuver cette décision ?"
+            ? "Valider cette décision ?"
             : "Refuser cette décision ?"
         }
         description={`${approvalToDecide?.title ?? ""} — aucune action extérieure réelle ne sera exécutée : seul le suivi interne sera mis à jour.`}
-        confirmLabel={approvalToDecide?.approved ? "Approuver" : "Refuser"}
+        confirmLabel={approvalToDecide?.approved ? "Valider" : "Refuser"}
         danger={!approvalToDecide?.approved}
         onConfirm={() => {
           if (approvalToDecide) {
@@ -728,7 +787,7 @@ export default function OrderDetailPage() {
               "Responsable magasin",
             );
             notify(
-              approvalToDecide.approved ? "Décision approuvée." : "Décision refusée.",
+              approvalToDecide.approved ? "Demande validée." : "Demande refusée.",
             );
           }
           setApprovalToDecide(null);

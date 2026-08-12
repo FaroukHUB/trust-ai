@@ -9,17 +9,50 @@ import { Badge } from "@/components/ui/Badge";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { ViewTabs } from "@/components/ui/ViewTabs";
 import { formatDate, formatDateTime } from "@/lib/format";
 import {
   approvalStatusLabels,
   approvalTypeLabels,
   supplierOrderStatusLabels,
 } from "@/lib/labels";
-import type { OrderLine, Supplier } from "@/lib/types";
+import type { Database, OrderLine, Supplier, SupplierOrder } from "@/lib/types";
+
+type SoView =
+  | "en_attente"
+  | "validees"
+  | "confirmees"
+  | "terminees"
+  | "archives"
+  | "toutes";
+
+/**
+ * Vue d'une commande fournisseur :
+ * - Terminées : toutes les lignes clients rattachées sont reçues au dépôt ;
+ * - Archives : commandes annulées.
+ */
+function soView(so: SupplierOrder, db: Database): SoView {
+  if (so.status === "annulee") return "archives";
+  if (so.status === "en_attente_validation" || so.status === "proposition") {
+    return "en_attente";
+  }
+  const lineIds = so.lines
+    .map((l) => l.orderLineId)
+    .filter((id): id is string => Boolean(id));
+  const allReceived =
+    lineIds.length > 0 &&
+    lineIds.every(
+      (id) =>
+        db.orderLines.find((l) => l.id === id)?.procurementStatus === "recu_depot",
+    );
+  if (allReceived) return "terminees";
+  return so.status === "confirmee" ? "confirmees" : "validees";
+}
 
 export default function PurchasesPage() {
   const { db, prepareSupplierOrder, decideApproval } = useData();
   const { notify } = useToast();
+  const [view, setView] = useState<SoView>("toutes");
   const [proposalToConfirm, setProposalToConfirm] = useState<{
     supplier: Supplier;
     lines: OrderLine[];
@@ -48,9 +81,15 @@ export default function PurchasesPage() {
     (r) => r.status === "en_attente" && r.relatedSupplierOrderId,
   );
 
-  const supplierOrders = [...db.supplierOrders].sort((a, b) =>
+  const allSupplierOrders = [...db.supplierOrders].sort((a, b) =>
     b.createdAt.localeCompare(a.createdAt),
   );
+  const supplierOrders =
+    view === "toutes"
+      ? allSupplierOrders
+      : allSupplierOrders.filter((so) => soView(so, db) === view);
+  const countFor = (v: SoView) =>
+    allSupplierOrders.filter((so) => soView(so, db) === v).length;
 
   return (
     <div className="flex flex-col gap-6">
@@ -196,7 +235,7 @@ export default function PurchasesPage() {
                         })
                       }
                     >
-                      Approuver
+                      Valider
                     </button>
                     <button
                       type="button"
@@ -231,8 +270,21 @@ export default function PurchasesPage() {
         <h2 id="historique-title" className="text-sm font-semibold">
           Commandes fournisseurs
         </h2>
+        <ViewTabs<SoView>
+          ariaLabel="Filtrer les commandes fournisseurs"
+          value={view}
+          onChange={setView}
+          tabs={[
+            { key: "en_attente", label: "En attente de validation", count: countFor("en_attente") },
+            { key: "validees", label: "Validées", count: countFor("validees") },
+            { key: "confirmees", label: "Confirmées fournisseur", count: countFor("confirmees") },
+            { key: "terminees", label: "Terminées", count: countFor("terminees") },
+            { key: "archives", label: "Archives", count: countFor("archives") },
+            { key: "toutes", label: "Toutes" },
+          ]}
+        />
         {supplierOrders.length === 0 ? (
-          <EmptyState title="Aucune commande fournisseur" />
+          <EmptyState title="Aucune commande fournisseur dans cette vue" />
         ) : (
           <div className="card overflow-x-auto">
             <table className="table-base">

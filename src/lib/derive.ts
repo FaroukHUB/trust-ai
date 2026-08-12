@@ -1,3 +1,4 @@
+import { fromCents, toCents } from "./money";
 import type {
   Database,
   Order,
@@ -7,24 +8,57 @@ import type {
   ProcurementStatus,
 } from "./types";
 
-/** Total d'une ligne : quantité × prix unitaire − remise de ligne. */
+/**
+ * Valeurs dérivées : totaux, RAP, statuts de paiement, file des relances.
+ * Tous les calculs monétaires passent par des centimes entiers (money.ts).
+ * Ces valeurs ne sont JAMAIS stockées : elles sont recalculées à la volée.
+ */
+
+/** Total d'une ligne en centimes : quantité × prix unitaire − remise. */
+export function lineTotalCents(line: OrderLine): number {
+  return (
+    Math.round(line.quantity * toCents(line.unitPrice)) -
+    toCents(line.discount || 0)
+  );
+}
+
+/** Total d'une ligne en euros. */
 export function lineTotal(line: OrderLine): number {
-  return line.quantity * line.unitPrice - (line.discount || 0);
+  return fromCents(lineTotalCents(line));
+}
+
+/** Total d'une commande en centimes. */
+export function orderTotalCents(order: Order, lines: OrderLine[]): number {
+  const items = lines
+    .filter((l) => l.orderId === order.id && l.procurementStatus !== "annule")
+    .reduce((sum, l) => sum + lineTotalCents(l), 0);
+  return items - toCents(order.discount || 0) + toCents(order.deliveryFee || 0);
 }
 
 /** Total d'une commande : somme des lignes − remise globale + frais de livraison. */
 export function orderTotal(order: Order, lines: OrderLine[]): number {
-  const items = lines
-    .filter((l) => l.orderId === order.id && l.procurementStatus !== "annule")
-    .reduce((sum, l) => sum + lineTotal(l), 0);
-  return items - (order.discount || 0) + (order.deliveryFee || 0);
+  return fromCents(orderTotalCents(order, lines));
 }
 
-/** Total encaissé (les remboursements sont des montants négatifs). */
-export function orderPaid(order: Order, payments: Payment[]): number {
+/** Total encaissé en centimes (les remboursements sont négatifs). */
+export function orderPaidCents(order: Order, payments: Payment[]): number {
   return payments
     .filter((p) => p.orderId === order.id)
-    .reduce((sum, p) => sum + p.amount, 0);
+    .reduce((sum, p) => sum + toCents(p.amount), 0);
+}
+
+/** Total encaissé en euros. */
+export function orderPaid(order: Order, payments: Payment[]): number {
+  return fromCents(orderPaidCents(order, payments));
+}
+
+/** RAP en centimes = total de la commande − règlements encaissés. */
+export function orderRapCents(
+  order: Order,
+  lines: OrderLine[],
+  payments: Payment[],
+): number {
+  return orderTotalCents(order, lines) - orderPaidCents(order, payments);
 }
 
 /** RAP = reste à payer = total de la commande − total des règlements encaissés. */
@@ -33,7 +67,24 @@ export function orderRap(
   lines: OrderLine[],
   payments: Payment[],
 ): number {
-  return round2(orderTotal(order, lines) - orderPaid(order, payments));
+  return fromCents(orderRapCents(order, lines, payments));
+}
+
+/**
+ * RAP global d'un ensemble de commandes, calculé COMMANDE PAR COMMANDE :
+ * somme de max(total commande − règlements de cette commande, 0).
+ * Un trop-perçu éventuel sur une commande ne diminue jamais le RAP
+ * d'une autre commande.
+ */
+export function globalRap(orders: Order[], db: Database): number {
+  const cents = orders
+    .filter((o) => o.status !== "annulee")
+    .reduce(
+      (sum, o) =>
+        sum + Math.max(0, orderRapCents(o, db.orderLines, db.payments)),
+      0,
+    );
+  return fromCents(cents);
 }
 
 /** Statut de paiement, toujours calculé à partir du total et des règlements. */
@@ -42,11 +93,11 @@ export function orderPaymentStatus(
   lines: OrderLine[],
   payments: Payment[],
 ): PaymentStatus {
-  const total = orderTotal(order, lines);
-  const paid = orderPaid(order, payments);
+  const total = orderTotalCents(order, lines);
+  const paid = orderPaidCents(order, payments);
   if (order.status === "annulee" && paid <= 0) return "rembourse";
   if (paid <= 0) return "a_payer";
-  if (paid + 0.005 >= total) return "paye";
+  if (paid >= total) return "paye";
   return "partiellement_paye";
 }
 
@@ -65,6 +116,8 @@ export interface ReminderItem {
   line: OrderLine;
   order: Order;
   overdueDays: number;
+  /** true si la relance est due (date atteinte ou dépassée, ou sans date). */
+  due: boolean;
 }
 
 /** File des relances du lundi, calculée depuis les lignes de commande. */
@@ -77,19 +130,24 @@ export function computeReminders(db: Database): ReminderItem[] {
     const order = db.orders.find((o) => o.id === line.orderId);
     if (!order || order.status === "annulee") continue;
     let overdueDays = 0;
+    let due = true;
     if (line.nextReminderAt) {
       const next = new Date(line.nextReminderAt);
       next.setHours(0, 0, 0, 0);
       overdueDays = Math.floor(
         (today.getTime() - next.getTime()) / (1000 * 60 * 60 * 24),
       );
+      due = overdueDays >= 0;
     }
-    items.push({ line, order, overdueDays });
+    items.push({ line, order, overdueDays, due });
   }
   return items.sort((a, b) => b.overdueDays - a.overdueDays);
 }
 
-/** Avancement d'une commande : part des lignes reçues ou disponibles. */
+/**
+ * Avancement logistique d'une commande : part des lignes déjà disponibles
+ * (stock local) ou reçues au dépôt, hors lignes annulées.
+ */
 export function orderProgress(order: Order, lines: OrderLine[]): number {
   const active = lines.filter(
     (l) => l.orderId === order.id && l.procurementStatus !== "annule",
@@ -103,4 +161,32 @@ export function orderProgress(order: Order, lines: OrderLine[]): number {
 
 export function linesOfOrder(db: Database, orderId: string): OrderLine[] {
   return db.orderLines.filter((l) => l.orderId === orderId);
+}
+
+/**
+ * Alertes financières dérivées : commandes annulées pour lesquelles un
+ * montant a été encaissé → remboursement ou avoir à traiter.
+ * Dérivé (jamais stocké) : l'alerte disparaîtra d'elle-même quand un
+ * remboursement (règlement négatif) ramènera l'encaissé à zéro.
+ */
+export interface FinancialAlert {
+  order: Order;
+  amount: number;
+}
+
+export function refundAlerts(db: Database): FinancialAlert[] {
+  return db.orders
+    .filter((o) => o.status === "annulee")
+    .map((o) => ({ order: o, amount: fromCents(orderPaidCents(o, db.payments)) }))
+    .filter((a) => a.amount > 0);
+}
+
+/** Demande d'annulation active (en attente) pour une commande. */
+export function pendingCancellation(db: Database, orderId: string) {
+  return db.approvalRequests.find(
+    (r) =>
+      r.type === "annulation_commande" &&
+      r.relatedOrderId === orderId &&
+      r.status === "en_attente",
+  );
 }

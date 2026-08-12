@@ -8,6 +8,9 @@ import type {
   PaymentMethod,
   PaymentStatus,
   ProcurementStatus,
+  ProductCategory,
+  ProductSource,
+  Role,
   ShipmentStatus,
   SupplierChannel,
   SupplierLogistics,
@@ -164,12 +167,40 @@ export const approvalStatusLabels: Record<
   ApprovalStatus,
   { label: string; tone: BadgeTone }
 > = {
-  en_attente: { label: "En attente", tone: "violet" },
-  approuvee: { label: "Approuvée", tone: "success" },
+  en_attente: { label: "En attente de validation", tone: "violet" },
+  approuvee: { label: "Validée", tone: "success" },
   refusee: { label: "Refusée", tone: "neutral" },
 };
 
 export const originLabels: Record<"SHOPIFY" | "MAGASIN", string> = {
   SHOPIFY: "Shopify",
   MAGASIN: "Magasin",
+};
+
+export const productCategoryLabels: Record<ProductCategory, string> = {
+  canapes: "Canapés",
+  tables: "Tables",
+  chaises: "Chaises",
+  lits: "Lits",
+  matelas: "Matelas",
+  fauteuils: "Fauteuils",
+  decoration: "Décoration",
+  luminaires: "Luminaires",
+};
+
+export const productSourceLabels: Record<
+  ProductSource,
+  { label: string; tone: BadgeTone }
+> = {
+  shopify: { label: "Shopify", tone: "info" },
+  manuel: { label: "Manuel", tone: "neutral" },
+};
+
+export const roleLabels: Record<Role, string> = {
+  vendeur: "Vendeuse / vendeur",
+  responsable_magasin: "Responsable magasin",
+  achats: "Achats",
+  logistique: "Logistique",
+  direction: "Direction",
+  administrateur: "Administrateur",
 };

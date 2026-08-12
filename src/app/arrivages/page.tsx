@@ -2,28 +2,54 @@
 
 import { useState } from "react";
 import { PackageOpen, Truck, Warehouse as WarehouseIcon } from "lucide-react";
-import { useData } from "@/lib/store/DataProvider";
+import { useData, BusinessError } from "@/lib/store/DataProvider";
 import { useToast } from "@/components/ui/Toast";
 import { Badge } from "@/components/ui/Badge";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { ViewTabs } from "@/components/ui/ViewTabs";
 import { formatDate } from "@/lib/format";
 import { shipmentStatusLabels, transportModeLabels } from "@/lib/labels";
-import type { Shipment, ShipmentStatus } from "@/lib/types";
+import type { Shipment } from "@/lib/types";
+
+type ViewKey =
+  | "en_retard"
+  | "a_venir"
+  | "en_transit"
+  | "recus_partiellement"
+  | "recus"
+  | "archives"
+  | "tous";
+
+function shipmentView(shipment: Shipment): ViewKey {
+  if (shipment.status === "annule") return "archives";
+  if (shipment.status === "recu") return "recus";
+  if (shipment.status === "recu_partiellement") return "recus_partiellement";
+  if (shipment.status === "en_transit") return "en_transit";
+  const late =
+    shipment.status === "retarde" ||
+    (shipment.plannedAt !== undefined &&
+      new Date(shipment.plannedAt).getTime() < Date.now());
+  return late ? "en_retard" : "a_venir";
+}
 
 export default function ShipmentsPage() {
   const { db, receiveShipment } = useData();
   const { notify } = useToast();
   const [warehouseFilter, setWarehouseFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState<"all" | ShipmentStatus>("all");
+  const [view, setView] = useState<ViewKey>("tous");
   const [receiving, setReceiving] = useState<Shipment | null>(null);
   const [receivedQuantities, setReceivedQuantities] = useState<Record<string, string>>({});
 
   if (!db) return <LoadingState />;
 
-  const shipments = db.shipments
-    .filter((s) => warehouseFilter === "all" || s.warehouseId === warehouseFilter)
-    .filter((s) => statusFilter === "all" || s.status === statusFilter)
+  const byWarehouse = db.shipments.filter(
+    (s) => warehouseFilter === "all" || s.warehouseId === warehouseFilter,
+  );
+  const countFor = (v: ViewKey) =>
+    byWarehouse.filter((s) => shipmentView(s) === v).length;
+  const shipments = byWarehouse
+    .filter((s) => view === "tous" || shipmentView(s) === view)
     .sort((a, b) => (a.plannedAt ?? "").localeCompare(b.plannedAt ?? ""));
 
   const openReception = (shipment: Shipment) => {
@@ -38,15 +64,24 @@ export default function ShipmentsPage() {
   const submitReception = (e: React.FormEvent) => {
     e.preventDefault();
     if (!receiving) return;
-    receiveShipment(
-      receiving.id,
-      receiving.items.map((i) => ({
-        itemId: i.id,
-        quantityReceived: parseInt(receivedQuantities[i.id] ?? "0", 10) || 0,
-      })),
-    );
+    try {
+      receiveShipment(
+        receiving.id,
+        receiving.items.map((i) => ({
+          itemId: i.id,
+          quantityReceived: parseInt(receivedQuantities[i.id] ?? "0", 10) || 0,
+        })),
+      );
+      notify("Réception enregistrée.");
+    } catch (err) {
+      notify(
+        err instanceof BusinessError
+          ? err.message
+          : "Impossible d'enregistrer la réception.",
+        "error",
+      );
+    }
     setReceiving(null);
-    notify("Réception enregistrée.");
   };
 
   return (
@@ -59,11 +94,29 @@ export default function ShipmentsPage() {
         </p>
       </div>
 
-      <div className="card grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:max-w-xl">
+      <div className="flex flex-wrap items-center gap-3">
+        <ViewTabs<ViewKey>
+          ariaLabel="Filtrer les arrivages"
+          value={view}
+          onChange={setView}
+          tabs={[
+            { key: "en_retard", label: "En retard", count: countFor("en_retard") },
+            { key: "a_venir", label: "À venir", count: countFor("a_venir") },
+            { key: "en_transit", label: "En transit", count: countFor("en_transit") },
+            {
+              key: "recus_partiellement",
+              label: "Reçus partiellement",
+              count: countFor("recus_partiellement"),
+            },
+            { key: "recus", label: "Reçus", count: countFor("recus") },
+            { key: "archives", label: "Archives", count: countFor("archives") },
+            { key: "tous", label: "Tous" },
+          ]}
+        />
         <label>
-          <span className="field-label">Dépôt</span>
+          <span className="sr-only">Dépôt</span>
           <select
-            className="field-input"
+            className="field-input w-auto"
             value={warehouseFilter}
             onChange={(e) => setWarehouseFilter(e.target.value)}
           >
@@ -71,21 +124,6 @@ export default function ShipmentsPage() {
             {db.warehouses.map((w) => (
               <option key={w.id} value={w.id}>
                 {w.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span className="field-label">Statut</span>
-          <select
-            className="field-input"
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as "all" | ShipmentStatus)}
-          >
-            <option value="all">Tous les statuts</option>
-            {Object.entries(shipmentStatusLabels).map(([key, v]) => (
-              <option key={key} value={key}>
-                {v.label}
               </option>
             ))}
           </select>
@@ -180,6 +218,9 @@ export default function ShipmentsPage() {
                         }}
                       >
                         {item.quantityReceived}/{item.quantity} reçu(s)
+                        {item.quantityReceived < item.quantity
+                          ? ` — restant : ${item.quantity - item.quantityReceived}`
+                          : ""}
                       </span>
                     </li>
                   ))}

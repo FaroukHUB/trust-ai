@@ -146,6 +146,8 @@ export interface Order {
   status: OrderStatus;
   notes?: string;
   createdAt: string;
+  /** Profil employé ayant créé la commande (phase Supabase Auth). */
+  createdByProfileId?: string;
 }
 
 /**
@@ -155,6 +157,11 @@ export interface Order {
 export interface OrderLine {
   id: string;
   orderId: string;
+  /** Rattachement au catalogue centralisé (absent pour les lignes libres). */
+  productId?: string;
+  variantId?: string;
+  /** Ligne saisie manuellement, hors catalogue (clairement signalée). */
+  offCatalog?: boolean;
   productName: string;
   variant?: string;
   reference?: string;
@@ -176,6 +183,53 @@ export interface OrderLine {
   lastReminderAt?: string;
   nextReminderAt?: string;
   comments?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Catalogue produits
+// ---------------------------------------------------------------------------
+
+export type ProductCategory =
+  | "canapes"
+  | "tables"
+  | "chaises"
+  | "lits"
+  | "matelas"
+  | "fauteuils"
+  | "decoration"
+  | "luminaires";
+
+export type ProductSource = "shopify" | "manuel";
+
+/**
+ * Produit du catalogue centralisé. Les champs Shopify sont facultatifs :
+ * ils seront renseignés lors de la future synchronisation (webhooks +
+ * API Admin). Pour l'instant la synchronisation est simulée.
+ */
+export interface Product {
+  id: string;
+  shopifyProductId?: string;
+  title: string;
+  shortDescription?: string;
+  category: ProductCategory;
+  imageUrl?: string;
+  shopifyHandle?: string;
+  source: ProductSource;
+  active: boolean;
+  lastSyncedAt?: string;
+}
+
+export interface ProductVariant {
+  id: string;
+  productId: string;
+  name: string;
+  sku: string;
+  barcode?: string;
+  color?: string;
+  dimensions?: string;
+  /** Prix de vente TTC en euros. */
+  price: number;
+  shopifyVariantId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +269,9 @@ export interface Supplier {
  */
 export interface ProductSupplier {
   id: string;
+  /** Rattachement au catalogue (facultatif pour les produits hors catalogue). */
+  productId?: string;
+  variantId?: string;
   productName: string;
   variant?: string;
   supplierId: string;
@@ -380,6 +437,8 @@ export interface Payment {
   method: PaymentMethod;
   storeId?: string;
   salespersonId?: string;
+  /** Profil employé ayant encaissé (phase Supabase Auth). */
+  receivedByProfileId?: string;
   comment?: string;
 }
 
@@ -431,10 +490,16 @@ export interface ApprovalRequest {
   relatedOrderId?: string;
   relatedSupplierOrderId?: string;
   relatedShipmentId?: string;
+  /** Personne (ou système) ayant demandé l'action. */
+  requestedBy?: string;
+  /** Montant en jeu (ex. montant déjà encaissé pour une annulation). */
+  financialImpact?: number;
   status: ApprovalStatus;
   createdAt: string;
   decidedAt?: string;
   decidedBy?: string;
+  /** Motif saisi lors de la décision (obligatoire moralement pour un refus). */
+  decisionReason?: string;
 }
 
 export interface ActivityLog {
@@ -447,6 +512,84 @@ export interface ActivityLog {
 }
 
 // ---------------------------------------------------------------------------
+// Comptes employés (préparation Supabase Auth — phase suivante)
+// ---------------------------------------------------------------------------
+
+/**
+ * Rôles prévus pour la phase d'authentification. Aucune fausse
+ * authentification n'est implémentée dans cette version : ces types
+ * préparent uniquement le schéma et les relations.
+ */
+export type Role =
+  | "vendeur"
+  | "responsable_magasin"
+  | "achats"
+  | "logistique"
+  | "direction"
+  | "administrateur";
+
+export type Permission =
+  | "creer_commande"
+  | "encaisser_reglement"
+  | "valider_decision"
+  | "gerer_achats"
+  | "gerer_logistique"
+  | "gerer_catalogue"
+  | "produit_hors_catalogue"
+  | "administrer";
+
+/**
+ * Profil employé. À la phase Supabase Auth, `authUserId` pointera vers
+ * l'utilisateur connecté et remplacera le choix manuel de la
+ * vendeuse/du vendeur dans les formulaires.
+ */
+export interface UserProfile {
+  id: string;
+  /** Identifiant Supabase Auth (renseigné en phase 2). */
+  authUserId?: string;
+  displayName: string;
+  role: Role;
+  /** Magasin principal de rattachement. */
+  primaryStoreId?: string;
+  /** Magasins sur lesquels le profil peut travailler. */
+  allowedStoreIds: string[];
+  /** Lien avec la fiche vendeuse/vendeur existante, le cas échéant. */
+  salespersonId?: string;
+  active: boolean;
+}
+
+export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
+  vendeur: ["creer_commande", "encaisser_reglement"],
+  responsable_magasin: [
+    "creer_commande",
+    "encaisser_reglement",
+    "valider_decision",
+    "produit_hors_catalogue",
+  ],
+  achats: ["gerer_achats", "valider_decision", "gerer_catalogue"],
+  logistique: ["gerer_logistique"],
+  direction: [
+    "creer_commande",
+    "encaisser_reglement",
+    "valider_decision",
+    "gerer_achats",
+    "gerer_logistique",
+    "gerer_catalogue",
+    "produit_hors_catalogue",
+  ],
+  administrateur: [
+    "creer_commande",
+    "encaisser_reglement",
+    "valider_decision",
+    "gerer_achats",
+    "gerer_logistique",
+    "gerer_catalogue",
+    "produit_hors_catalogue",
+    "administrer",
+  ],
+};
+
+// ---------------------------------------------------------------------------
 // Base de données de démonstration
 // ---------------------------------------------------------------------------
 
@@ -456,6 +599,9 @@ export interface Database {
   stores: Store[];
   warehouses: Warehouse[];
   salespeople: Salesperson[];
+  userProfiles: UserProfile[];
+  products: Product[];
+  productVariants: ProductVariant[];
   customers: Customer[];
   orders: Order[];
   orderLines: OrderLine[];

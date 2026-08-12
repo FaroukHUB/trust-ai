@@ -7,6 +7,13 @@ import { useData } from "@/lib/store/DataProvider";
 import { Badge } from "@/components/ui/Badge";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { ViewTabs } from "@/components/ui/ViewTabs";
+import { PaginationBar, usePagination } from "@/components/ui/Pagination";
+import {
+  PeriodFilter,
+  inPeriod,
+  type PeriodValue,
+} from "@/components/ui/PeriodFilter";
 import {
   linesOfOrder,
   orderPaymentStatus,
@@ -20,13 +27,38 @@ import {
   paymentStatusLabels,
   procurementStatusLabels,
 } from "@/lib/labels";
-import type { OrderOrigin, ProcurementStatus } from "@/lib/types";
+import type { Database, Order, OrderOrigin, ProcurementStatus } from "@/lib/types";
 
 type Tab = "toutes" | "shopify" | "magasin";
+type ViewKey = "a_traiter" | "en_cours" | "terminees" | "annulees" | "toutes";
+
+/**
+ * Vues d'état :
+ * - À traiter : commandes ouvertes avec au moins un article qui attend une
+ *   action (à vérifier, à commander, validation, indisponible, relance) ;
+ * - En cours : autres commandes ouvertes ;
+ * - Terminées / Annulées : selon le statut de la commande.
+ */
+function matchesView(order: Order, db: Database, view: ViewKey): boolean {
+  if (view === "toutes") return true;
+  if (view === "terminees") return order.status === "terminee";
+  if (view === "annulees") return order.status === "annulee";
+  if (order.status !== "ouverte") return false;
+  const needsAction = db.orderLines.some(
+    (l) =>
+      l.orderId === order.id &&
+      ["a_verifier", "a_commander", "en_attente_validation", "indisponible", "relance_due"].includes(
+        l.procurementStatus,
+      ),
+  );
+  return view === "a_traiter" ? needsAction : !needsAction;
+}
 
 export default function OrdersPage() {
   const { db, storeFilter } = useData();
   const [tab, setTab] = useState<Tab>("toutes");
+  const [view, setView] = useState<ViewKey>("toutes");
+  const [period, setPeriod] = useState<PeriodValue>({ key: "toutes" });
   const [search, setSearch] = useState("");
   const [supplierId, setSupplierId] = useState("all");
   const [status, setStatus] = useState<"all" | ProcurementStatus>("all");
@@ -40,6 +72,8 @@ export default function OrdersPage() {
       .filter((o) =>
         tab === "toutes" ? true : tab === "shopify" ? o.origin === "SHOPIFY" : o.origin === "MAGASIN",
       )
+      .filter((o) => matchesView(o, db, view))
+      .filter((o) => inPeriod(o.orderedAt, period))
       .filter((o) => origin === "all" || o.origin === origin)
       .filter((o) => store === "all" || o.storeId === store)
       .filter((o) => {
@@ -66,7 +100,9 @@ export default function OrdersPage() {
         );
       })
       .sort((a, b) => b.orderedAt.localeCompare(a.orderedAt));
-  }, [db, storeFilter, tab, search, supplierId, status, origin, store]);
+  }, [db, storeFilter, tab, view, period, search, supplierId, status, origin, store]);
+
+  const pagination = usePagination(orders);
 
   if (!db) return <LoadingState />;
 
@@ -75,6 +111,12 @@ export default function OrdersPage() {
     { key: "shopify", label: "Shopify" },
     { key: "magasin", label: "Magasin" },
   ];
+
+  const baseOrders = db.orders.filter(
+    (o) => storeFilter === "all" || o.storeId === storeFilter,
+  );
+  const viewCount = (v: ViewKey) =>
+    baseOrders.filter((o) => matchesView(o, db, v)).length;
 
   return (
     <div className="flex flex-col gap-5">
@@ -91,29 +133,26 @@ export default function OrdersPage() {
         </Link>
       </div>
 
-      <div
-        className="flex w-fit rounded-md border p-0.5"
-        style={{ borderColor: "var(--border)", background: "var(--surface)" }}
-        role="tablist"
-        aria-label="Filtrer par origine"
-      >
-        {tabs.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            role="tab"
-            aria-selected={tab === t.key}
-            onClick={() => setTab(t.key)}
-            className="rounded px-4 py-1.5 text-sm font-medium transition"
-            style={
-              tab === t.key
-                ? { background: "var(--primary-soft)", color: "var(--primary-strong)" }
-                : { color: "var(--muted)" }
-            }
-          >
-            {t.label}
-          </button>
-        ))}
+      <div className="flex flex-wrap items-center gap-3">
+        <ViewTabs<ViewKey>
+          ariaLabel="Filtrer par état"
+          value={view}
+          onChange={setView}
+          tabs={[
+            { key: "a_traiter", label: "À traiter", count: viewCount("a_traiter") },
+            { key: "en_cours", label: "En cours", count: viewCount("en_cours") },
+            { key: "terminees", label: "Terminées", count: viewCount("terminees") },
+            { key: "annulees", label: "Annulées", count: viewCount("annulees") },
+            { key: "toutes", label: "Toutes" },
+          ]}
+        />
+        <ViewTabs<Tab>
+          ariaLabel="Filtrer par origine"
+          value={tab}
+          onChange={setTab}
+          tabs={tabs}
+        />
+        <PeriodFilter value={period} onChange={setPeriod} />
       </div>
 
       <div className="card grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-5">
@@ -210,12 +249,19 @@ export default function OrdersPage() {
                 <th scope="col">Total</th>
                 <th scope="col">RAP</th>
                 <th scope="col">Paiement</th>
-                <th scope="col">Avancement</th>
+                <th scope="col">
+                  <span
+                    title="Part des articles de la commande déjà disponibles en stock ou reçus au dépôt."
+                    className="cursor-help underline decoration-dotted underline-offset-2"
+                  >
+                    Avancement logistique
+                  </span>
+                </th>
                 <th scope="col">Date</th>
               </tr>
             </thead>
             <tbody>
-              {orders.map((order) => {
+              {pagination.paged.map((order) => {
                 const customer = db.customers.find((c) => c.id === order.customerId);
                 const lines = linesOfOrder(db, order.id);
                 const total = orderTotal(order, lines);
@@ -277,6 +323,14 @@ export default function OrdersPage() {
               })}
             </tbody>
           </table>
+          <PaginationBar
+            page={pagination.page}
+            pageCount={pagination.pageCount}
+            pageSize={pagination.pageSize}
+            total={pagination.total}
+            onPageChange={pagination.setPage}
+            onPageSizeChange={pagination.setPageSize}
+          />
         </div>
       )}
     </div>

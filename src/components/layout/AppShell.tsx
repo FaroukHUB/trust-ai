@@ -5,7 +5,9 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 import {
   BarChart3,
+  BookOpen,
   Building2,
+  CheckSquare,
   ClipboardList,
   CreditCard,
   LayoutDashboard,
@@ -25,6 +27,8 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 const navigation = [
   { href: "/dashboard", label: "Tableau de bord", icon: LayoutDashboard },
   { href: "/commandes", label: "Commandes", icon: ClipboardList },
+  { href: "/catalogue", label: "Catalogue", icon: BookOpen },
+  { href: "/validations", label: "Validations", icon: CheckSquare },
   { href: "/achats", label: "Achats fournisseurs", icon: ShoppingCart },
   { href: "/relances", label: "Relances du lundi", icon: PhoneOutgoing },
   { href: "/arrivages", label: "Arrivages", icon: Truck },
@@ -33,7 +37,13 @@ const navigation = [
   { href: "/acquisition", label: "Acquisition", icon: Megaphone },
 ];
 
-function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
+function NavLinks({
+  onNavigate,
+  pendingApprovals,
+}: {
+  onNavigate?: () => void;
+  pendingApprovals: number;
+}) {
   const pathname = usePathname();
   return (
     <nav className="flex flex-col gap-1" aria-label="Navigation principale">
@@ -55,6 +65,15 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
           >
             <item.icon size={18} aria-hidden />
             {item.label}
+            {item.href === "/validations" && pendingApprovals > 0 ? (
+              <span
+                className="ml-auto rounded-full px-2 py-0.5 text-xs font-bold text-white"
+                style={{ background: "var(--danger)" }}
+                aria-label={`${pendingApprovals} demande(s) en attente de validation`}
+              >
+                {pendingApprovals}
+              </span>
+            ) : null}
           </Link>
         );
       })}
@@ -69,6 +88,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [confirmReset, setConfirmReset] = useState(false);
 
   const stores = db?.stores ?? [];
+  const pendingApprovals =
+    db?.approvalRequests.filter((r) => r.status === "en_attente").length ?? 0;
   const currentStoreName =
     storeFilter === "all"
       ? "Tous les magasins"
@@ -91,7 +112,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </p>
         </div>
       </div>
-      <NavLinks onNavigate={() => setMobileOpen(false)} />
+      <NavLinks
+        onNavigate={() => setMobileOpen(false)}
+        pendingApprovals={pendingApprovals}
+      />
       <div className="mt-auto flex flex-col gap-2">
         <span
           className="inline-flex w-fit items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold"

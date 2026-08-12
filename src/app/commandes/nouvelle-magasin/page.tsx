@@ -2,10 +2,15 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Trash2 } from "lucide-react";
-import { useData, todayIso } from "@/lib/store/DataProvider";
+import { PenLine, Plus, Trash2 } from "lucide-react";
+import { useData, todayIso, BusinessError } from "@/lib/store/DataProvider";
 import { useToast } from "@/components/ui/Toast";
 import { LoadingState } from "@/components/ui/LoadingState";
+import { Badge } from "@/components/ui/Badge";
+import {
+  ProductCombobox,
+  type ProductSelection,
+} from "@/components/ui/ProductCombobox";
 import { formatEuro } from "@/lib/format";
 import {
   acquisitionSourceLabels,
@@ -20,6 +25,10 @@ import type {
 
 interface LineDraft {
   key: number;
+  /** Rattachement catalogue ; absent pour une ligne hors catalogue. */
+  productId?: string;
+  variantId?: string;
+  offCatalog: boolean;
   productName: string;
   variant: string;
   reference: string;
@@ -45,6 +54,7 @@ let keyCounter = 1;
 function emptyLine(): LineDraft {
   return {
     key: keyCounter++,
+    offCatalog: true,
     productName: "",
     variant: "",
     reference: "",
@@ -53,6 +63,27 @@ function emptyLine(): LineDraft {
     discount: "",
     supplierId: "",
     altSupplierId: "",
+    destinationWarehouseId: "",
+    comments: "",
+  };
+}
+
+/** Ligne préremplie depuis le catalogue : produit, variante, SKU, prix,
+ *  fournisseur principal et alternatif. La quantité reste modifiable. */
+function catalogLine(selection: ProductSelection): LineDraft {
+  return {
+    key: keyCounter++,
+    productId: selection.product.id,
+    variantId: selection.variant.id,
+    offCatalog: false,
+    productName: selection.product.title,
+    variant: selection.variant.name,
+    reference: selection.variant.sku,
+    quantity: "1",
+    unitPrice: String(selection.variant.price),
+    discount: "",
+    supplierId: selection.primarySupplierId ?? "",
+    altSupplierId: selection.altSupplierId ?? "",
     destinationWarehouseId: "",
     comments: "",
   };
@@ -88,7 +119,7 @@ export default function NewStoreOrderPage() {
   const [discount, setDiscount] = useState("");
   const [acquisitionSource, setAcquisitionSource] = useState<AcquisitionSource | "">("");
   const [notes, setNotes] = useState("");
-  const [lines, setLines] = useState<LineDraft[]>([emptyLine()]);
+  const [lines, setLines] = useState<LineDraft[]>([]);
   const [payments, setPayments] = useState<PaymentDraft[]>([]);
   const [errors, setErrors] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -122,7 +153,11 @@ export default function NewStoreOrderPage() {
     if (fulfillmentMode === "livraison" && !address.trim()) {
       errs.push("L'adresse est obligatoire en cas de livraison.");
     }
-    if (lines.length === 0) errs.push("Ajoutez au moins un article.");
+    if (lines.length === 0) {
+      errs.push(
+        "Ajoutez au moins un article (depuis le catalogue ou hors catalogue).",
+      );
+    }
     lines.forEach((l, i) => {
       if (!l.productName.trim()) errs.push(`Article ${i + 1} : le produit est obligatoire.`);
       if (num(l.quantity) <= 0) errs.push(`Article ${i + 1} : la quantité doit être supérieure à zéro.`);
@@ -147,8 +182,9 @@ export default function NewStoreOrderPage() {
       return;
     }
     setSubmitting(true);
+    let order;
     try {
-      const order = createStoreOrder({
+      order = createStoreOrder({
         storeId,
         salespersonId,
         orderedAt: new Date(`${orderedAt}T10:00:00`).toISOString(),
@@ -167,6 +203,9 @@ export default function NewStoreOrderPage() {
         acquisitionSource: acquisitionSource || undefined,
         notes: notes.trim() || undefined,
         lines: lines.map((l) => ({
+          productId: l.productId,
+          variantId: l.variantId,
+          offCatalog: l.offCatalog,
           productName: l.productName.trim(),
           variant: l.variant.trim() || undefined,
           reference: l.reference.trim() || undefined,
@@ -187,9 +226,14 @@ export default function NewStoreOrderPage() {
       });
       notify(`Commande ${order.reference} enregistrée.`);
       router.push(`/commandes/${order.id}`);
-    } catch {
+    } catch (err) {
       setSubmitting(false);
-      notify("Impossible d'enregistrer la commande.", "error");
+      notify(
+        err instanceof BusinessError
+          ? err.message
+          : "Impossible d'enregistrer la commande.",
+        "error",
+      );
     }
   };
 
@@ -440,26 +484,55 @@ export default function NewStoreOrderPage() {
 
       {/* Articles */}
       <section className="card p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold">Articles</h2>
+        <h2 className="mb-1 text-sm font-semibold">Articles</h2>
+        <p className="mb-3 text-sm" style={{ color: "var(--muted)" }}>
+          Recherchez un produit du catalogue (nom, SKU, référence fournisseur)
+          puis sélectionnez sa variante. La quantité reste modifiable.
+        </p>
+        <ProductCombobox
+          db={db}
+          onSelect={(selection) => setLines((ls) => [...ls, catalogLine(selection)])}
+        />
+        <div className="mt-2 flex items-center justify-between gap-2">
           <button
             type="button"
             className="btn-secondary"
             onClick={() => setLines((ls) => [...ls, emptyLine()])}
           >
-            <Plus size={16} aria-hidden />
-            Ajouter un article
+            <PenLine size={16} aria-hidden />
+            Produit hors catalogue
           </button>
+          <p className="text-xs" style={{ color: "var(--muted)" }}>
+            La saisie libre sera réservée aux responsables après l&apos;ajout de
+            l&apos;authentification.
+          </p>
         </div>
-        <div className="flex flex-col gap-4">
+        <div className="mt-4 flex flex-col gap-4">
+          {lines.length === 0 ? (
+            <p
+              className="rounded-md border border-dashed p-4 text-center text-sm"
+              style={{ borderColor: "var(--border)", color: "var(--muted)" }}
+            >
+              Aucun article pour l&apos;instant : sélectionnez un produit du
+              catalogue ou ajoutez un produit hors catalogue.
+            </p>
+          ) : null}
           {lines.map((line, index) => (
             <fieldset
               key={line.key}
               className="rounded-md border p-3"
               style={{ borderColor: "var(--border)" }}
             >
-              <legend className="px-1 text-xs font-semibold" style={{ color: "var(--muted)" }}>
+              <legend
+                className="flex items-center gap-2 px-1 text-xs font-semibold"
+                style={{ color: "var(--muted)" }}
+              >
                 Article {index + 1}
+                {line.offCatalog ? (
+                  <Badge tone="warning">Hors catalogue</Badge>
+                ) : (
+                  <Badge tone="info">Catalogue</Badge>
+                )}
               </legend>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <div className="lg:col-span-2">
@@ -472,6 +545,8 @@ export default function NewStoreOrderPage() {
                     value={line.productName}
                     onChange={(e) => updateLine(line.key, { productName: e.target.value })}
                     placeholder="Ex. Canapé d'angle Milano"
+                    readOnly={!line.offCatalog}
+                    aria-readonly={!line.offCatalog}
                   />
                 </div>
                 <div>
@@ -484,17 +559,21 @@ export default function NewStoreOrderPage() {
                     value={line.variant}
                     onChange={(e) => updateLine(line.key, { variant: e.target.value })}
                     placeholder="Coloris, dimensions…"
+                    readOnly={!line.offCatalog}
+                    aria-readonly={!line.offCatalog}
                   />
                 </div>
                 <div>
                   <label htmlFor={`reference-${line.key}`} className="field-label">
-                    Référence
+                    {line.offCatalog ? "Référence" : "SKU"}
                   </label>
                   <input
                     id={`reference-${line.key}`}
                     className="field-input"
                     value={line.reference}
                     onChange={(e) => updateLine(line.key, { reference: e.target.value })}
+                    readOnly={!line.offCatalog}
+                    aria-readonly={!line.offCatalog}
                   />
                 </div>
                 <div>
@@ -619,17 +698,15 @@ export default function NewStoreOrderPage() {
                     num(line.quantity) * num(line.unitPrice) - num(line.discount),
                   )}
                 </p>
-                {lines.length > 1 ? (
-                  <button
-                    type="button"
-                    className="flex items-center gap-1.5 text-sm font-medium"
-                    style={{ color: "var(--danger)" }}
-                    onClick={() => setLines((ls) => ls.filter((l) => l.key !== line.key))}
-                  >
-                    <Trash2 size={15} aria-hidden />
-                    Retirer l&apos;article
-                  </button>
-                ) : null}
+                <button
+                  type="button"
+                  className="flex items-center gap-1.5 text-sm font-medium"
+                  style={{ color: "var(--danger)" }}
+                  onClick={() => setLines((ls) => ls.filter((l) => l.key !== line.key))}
+                >
+                  <Trash2 size={15} aria-hidden />
+                  Retirer l&apos;article
+                </button>
               </div>
             </fieldset>
           ))}
