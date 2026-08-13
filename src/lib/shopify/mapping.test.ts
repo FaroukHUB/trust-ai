@@ -192,8 +192,20 @@ describe("Mapping d'un produit Shopify", () => {
       status: "active",
       updated_at: "2026-08-13T09:00:00Z",
       image: { src: "https://cdn.shopify.com/img.jpg" },
+      options: [
+        { name: "Couleur", position: 1 },
+        { name: "Dimensions", position: 2 },
+      ],
       variants: [
-        { id: 91001, title: "Gris", sku: "OSLO-GR", price: "899.00", barcode: "123" },
+        {
+          id: 91001,
+          title: "Gris",
+          sku: "OSLO-GR",
+          price: "899.00",
+          barcode: "123",
+          option1: "Gris",
+          option2: "L. 220 x l. 95 cm",
+        },
         { id: 91002, title: "Default Title", sku: "", price: "899.00" },
       ],
     });
@@ -206,10 +218,16 @@ describe("Mapping d'un produit Shopify", () => {
       name: "Gris",
       sku: "OSLO-GR",
       price_cents: 89900,
+      // Options structurées reconnues par leur nom (Couleur / Dimensions).
+      color: "Gris",
+      dimensions: "L. 220 x l. 95 cm",
     });
-    // Variante par défaut : nom lisible + SKU de repli déterministe.
+    // Variante par défaut : nom lisible + SKU de repli déterministe,
+    // aucune couleur/dimension inventée.
     expect(mapped.variants[1].name).toBe("Standard");
     expect(mapped.variants[1].sku).toBe("SHOPIFY-91002");
+    expect(mapped.variants[1].color).toBeUndefined();
+    expect(mapped.variants[1].dimensions).toBeUndefined();
   });
 
   it("déduit la catégorie depuis le type de produit (heuristique)", () => {

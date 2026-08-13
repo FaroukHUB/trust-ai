@@ -174,6 +174,10 @@ function productNode(id: number, variantCount: number) {
           sku: `SKU-${id}-${i + 1}`,
           barcode: null,
           price: "199.00",
+          selectedOptions: [
+            { name: "Couleur", value: `Teinte ${i + 1}` },
+            { name: "Dimensions", value: "L. 250 x l. 170 cm" },
+          ],
         },
       })),
     },
@@ -223,6 +227,9 @@ describe("Import complet du catalogue (GraphQL, pagination)", () => {
     expect(products[0].variants[0].shopify_variant_id).toBe("10");
     expect(products[0].variants[0].sku).toBe("SKU-1-1");
     expect(products[0].variants[0].price_cents).toBe(19900);
+    // Options structurées Shopify → colonnes couleur/dimensions.
+    expect(products[0].variants[0].color).toBe("Teinte 1");
+    expect(products[0].variants[0].dimensions).toBe("L. 250 x l. 170 cm");
     // Statut ARCHIVED → inactif (archivage maîtrisé, jamais supprimé).
     expect(products[0].product.active).toBe(true);
     expect(products[1].product.active).toBe(false);

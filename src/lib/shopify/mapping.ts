@@ -315,11 +315,42 @@ export interface MappedProduct {
     sku: string;
     barcode?: string;
     price_cents: number;
+    color?: string;
+    dimensions?: string;
   }[];
+}
+
+/**
+ * Extrait la couleur et les dimensions depuis les OPTIONS structurées de la
+ * variante Shopify (« Couleur : Caramel », « Dimensions : L. 250 x l. 170 »).
+ * Reconnaissance par nom d'option (français/anglais) — jamais d'invention :
+ * une option non reconnue est simplement ignorée.
+ */
+export function structuredVariantOptions(
+  options: { name?: string | null; value?: string | null }[] | null | undefined,
+): { color?: string; dimensions?: string } {
+  let color: string | undefined;
+  let dimensions: string | undefined;
+  for (const option of options ?? []) {
+    const name = (option.name ?? "").toLowerCase();
+    const value = option.value?.trim();
+    if (!value || value === "Default Title") continue;
+    if (!color && /couleur|coloris|color|tissu|finition|mati[eè]re/.test(name)) {
+      color = value;
+    } else if (!dimensions && /dimension|taille|size|longueur|largeur|format/.test(name)) {
+      dimensions = value;
+    }
+  }
+  return { color, dimensions };
 }
 
 /** Transforme un payload de webhook products/create | products/update. */
 export function mapProductPayload(payload: Payload): MappedProduct {
+  // Noms d'options du produit, dans l'ordre des positions (option1..3).
+  const optionNames: string[] = ((payload.options ?? []) as Payload[])
+    .slice()
+    .sort((a: Payload, b: Payload) => (a.position ?? 0) - (b.position ?? 0))
+    .map((o: Payload) => String(o.name ?? ""));
   return {
     product: {
       shopify_product_id: String(payload.id),
@@ -334,16 +365,26 @@ export function mapProductPayload(payload: Payload): MappedProduct {
       active: payload.status ? payload.status === "active" : true,
       shopify_updated_at: payload.updated_at ?? undefined,
     },
-    variants: (payload.variants ?? []).map((variant: Payload) => ({
-      shopify_variant_id: String(variant.id),
-      name:
-        variant.title && variant.title !== "Default Title"
-          ? variant.title
-          : "Standard",
-      sku: variant.sku || `SHOPIFY-${variant.id}`,
-      barcode: variant.barcode || undefined,
-      price_cents: moneyStringToCents(variant.price),
-    })),
+    variants: (payload.variants ?? []).map((variant: Payload) => {
+      const { color, dimensions } = structuredVariantOptions(
+        [variant.option1, variant.option2, variant.option3].map((value, index) => ({
+          name: optionNames[index],
+          value: value ?? null,
+        })),
+      );
+      return {
+        shopify_variant_id: String(variant.id),
+        name:
+          variant.title && variant.title !== "Default Title"
+            ? variant.title
+            : "Standard",
+        sku: variant.sku || `SHOPIFY-${variant.id}`,
+        barcode: variant.barcode || undefined,
+        price_cents: moneyStringToCents(variant.price),
+        color,
+        dimensions,
+      };
+    }),
   };
 }
 
@@ -379,6 +420,7 @@ export function mapGraphQLProductNode(node: Payload): MappedProduct {
     },
     variants: variants.map((variant) => {
       const variantId = numericId(variant.id) ?? String(variant.id);
+      const { color, dimensions } = structuredVariantOptions(variant.selectedOptions);
       return {
         shopify_variant_id: variantId,
         name:
@@ -388,6 +430,8 @@ export function mapGraphQLProductNode(node: Payload): MappedProduct {
         sku: variant.sku || `SHOPIFY-${variantId}`,
         barcode: variant.barcode || undefined,
         price_cents: moneyStringToCents(variant.price),
+        color,
+        dimensions,
       };
     }),
   };

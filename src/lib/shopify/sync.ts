@@ -330,6 +330,8 @@ export async function upsertProductsBulk(
         name: variant.name,
         sku: variant.sku,
         barcode: variant.barcode ?? null,
+        color: variant.color ?? null,
+        dimensions: variant.dimensions ?? null,
         price_cents: variant.price_cents,
         shopify_updated_at: mapped.product.shopify_updated_at ?? null,
       });
@@ -376,7 +378,7 @@ const PRODUCTS_QUERY = `
           featuredImage { url }
           variants(first: 100) {
             edges {
-              node { id title sku barcode price }
+              node { id title sku barcode price selectedOptions { name value } }
             }
           }
         }
