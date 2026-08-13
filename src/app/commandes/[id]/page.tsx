@@ -39,10 +39,10 @@ import {
   originLabels,
   paymentMethodLabels,
   paymentStatusLabels,
-  procurementStatusLabels,
   shipmentStatusLabels,
   transportModeLabels,
 } from "@/lib/labels";
+import { LineProcurementControl } from "@/components/LineProcurementControl";
 import type { PaymentMethod } from "@/lib/types";
 
 export default function OrderDetailPage() {
@@ -252,7 +252,6 @@ export default function OrderDetailPage() {
                     const warehouse = db.warehouses.find(
                       (w) => w.id === line.destinationWarehouseId,
                     );
-                    const status = procurementStatusLabels[line.procurementStatus];
                     return (
                       <tr key={line.id}>
                         <td>
@@ -296,7 +295,10 @@ export default function OrderDetailPage() {
                           ) : null}
                         </td>
                         <td>
-                          <Badge tone={status.tone}>{status.label}</Badge>
+                          <LineProcurementControl
+                            line={line}
+                            orderCancelled={order.status === "annulee"}
+                          />
                         </td>
                         <td className="whitespace-nowrap">{formatDate(line.expectedArrival)}</td>
                         <td>{warehouse?.name ?? "—"}</td>

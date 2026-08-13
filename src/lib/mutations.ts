@@ -624,10 +624,37 @@ export function updateLineStatusM(
   db: Database,
   lineId: string,
   status: ProcurementStatus,
+  options?: {
+    supplierId?: string;
+    altSupplierId?: string;
+    destinationWarehouseId?: string;
+  },
 ): void {
   const line = db.orderLines.find((l) => l.id === lineId);
   if (!line) throw new BusinessError("Article introuvable.");
+  const order = db.orders.find((o) => o.id === line.orderId);
+  // Mêmes garde-fous que la fonction serveur set_line_procurement.
+  if (order?.status === "annulee") {
+    throw new BusinessError(
+      "Commande annulée : son suivi ne peut plus être modifié.",
+    );
+  }
+  if (line.procurementStatus === "annule") {
+    throw new BusinessError(
+      "Article annulé : son suivi ne peut plus être modifié.",
+    );
+  }
+  if (status === "a_commander" && !(options?.supplierId ?? line.supplierId)) {
+    throw new BusinessError(
+      "Un article à commander doit indiquer son fournisseur principal.",
+    );
+  }
   line.procurementStatus = status;
+  if (options?.supplierId) line.supplierId = options.supplierId;
+  if (options?.altSupplierId) line.altSupplierId = options.altSupplierId;
+  if (options?.destinationWarehouseId) {
+    line.destinationWarehouseId = options.destinationWarehouseId;
+  }
   if (status === "relance_due" && !line.nextReminderAt) {
     line.nextReminderAt = nextMonday();
   }

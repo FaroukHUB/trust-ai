@@ -463,6 +463,26 @@ export class SupabaseRepository {
     throwAsBusiness(error);
   }
 
+  /** Qualification d'une ligne (stock local / à commander / indisponible). */
+  async setLineProcurement(
+    lineId: string,
+    status: ProcurementStatus,
+    options: {
+      supplierId?: string;
+      altSupplierId?: string;
+      destinationWarehouseId?: string;
+    } = {},
+  ): Promise<void> {
+    const { error } = await this.supabase.rpc("set_line_procurement", {
+      p_line_id: lineId,
+      p_status: status,
+      p_supplier_id: options.supplierId ?? null,
+      p_alt_supplier_id: options.altSupplierId ?? null,
+      p_destination_warehouse_id: options.destinationWarehouseId ?? null,
+    });
+    throwAsBusiness(error);
+  }
+
   async decideApproval(
     requestId: string,
     approved: boolean,

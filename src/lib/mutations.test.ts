@@ -8,6 +8,7 @@ import {
   markReminderDoneM,
   receiveShipmentM,
   requestOrderCancellationM,
+  updateLineStatusM,
 } from "./mutations";
 import {
   computeReminders,
@@ -597,5 +598,40 @@ describe("V2 — auto-validation interdite", () => {
     // Une autre personne peut décider normalement.
     decideApprovalM(db, request.id, false, "Direction Trust", "Refus test");
     expect(request.status).toBe("refusee");
+  });
+});
+
+describe("Qualification d'une ligne (updateLineStatusM)", () => {
+  it("exige un fournisseur pour passer « à commander »", () => {
+    // Cas d'une commande Shopify fraîchement reçue : article non encore
+    // rattaché à un fournisseur.
+    const line = db.orderLines.find((l) => l.procurementStatus !== "annule");
+    if (!line) throw new Error("Jeu de données inattendu : aucune ligne active.");
+    line.supplierId = undefined;
+    line.procurementStatus = "a_verifier";
+    const before = line.procurementStatus;
+    expect(() => updateLineStatusM(db, line.id, "a_commander")).toThrow(BusinessError);
+    // Refus atomique : rien n'a changé.
+    expect(line.procurementStatus).toBe(before);
+
+    const supplierId = db.suppliers[0].id;
+    updateLineStatusM(db, line.id, "a_commander", { supplierId });
+    expect(line.procurementStatus).toBe("a_commander");
+    expect(line.supplierId).toBe(supplierId);
+  });
+
+  it("refuse toute modification sur une commande annulée", () => {
+    const order = db.orders.find((o) => o.status === "ouverte");
+    if (!order) throw new Error("Jeu de données inattendu : aucune commande ouverte.");
+    const line = db.orderLines.find((l) => l.orderId === order.id);
+    if (!line) throw new Error("Jeu de données inattendu : commande sans ligne.");
+    order.status = "annulee";
+    expect(() => updateLineStatusM(db, line.id, "stock_local")).toThrow(BusinessError);
+  });
+
+  it("refuse de modifier une ligne déjà annulée", () => {
+    const line = db.orderLines[0];
+    line.procurementStatus = "annule";
+    expect(() => updateLineStatusM(db, line.id, "stock_local")).toThrow(BusinessError);
   });
 });

@@ -73,7 +73,15 @@ interface DataContextValue {
     options?: DecideApprovalOptions,
   ) => Promise<void>;
   requestOrderCancellation: (orderId: string) => Promise<void>;
-  updateLineStatus: (lineId: string, status: ProcurementStatus) => Promise<void>;
+  updateLineStatus: (
+    lineId: string,
+    status: ProcurementStatus,
+    options?: {
+      supplierId?: string;
+      altSupplierId?: string;
+      destinationWarehouseId?: string;
+    },
+  ) => Promise<void>;
   receiveShipment: (
     shipmentId: string,
     receipts: { itemId: string; quantityReceived: number }[],
@@ -225,14 +233,25 @@ export function DataProvider({ children }: { children: ReactNode }) {
   );
 
   const updateLineStatus = useCallback(
-    async (lineId: string, status: ProcurementStatus) => {
+    async (
+      lineId: string,
+      status: ProcurementStatus,
+      options?: {
+        supplierId?: string;
+        altSupplierId?: string;
+        destinationWarehouseId?: string;
+      },
+    ) => {
       if (remote) {
-        // Non exposé en mode connecté pour l'instant (piloté par les RPC).
+        // Mode connecté : le serveur rejoue les mêmes règles avec l'identité
+        // réelle (permission « gerer_achats », commande annulée refusée…).
+        await remote.setLineProcurement(lineId, status, options ?? {});
+        await refresh();
         return;
       }
-      applyLocal((d) => updateLineStatusM(d, lineId, status));
+      applyLocal((d) => updateLineStatusM(d, lineId, status, options));
     },
-    [remote, applyLocal],
+    [remote, refresh, applyLocal],
   );
 
   const receiveShipment = useCallback(
