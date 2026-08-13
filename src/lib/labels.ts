@@ -109,6 +109,7 @@ export const paymentMethodLabels: Record<PaymentMethod, string> = {
   alma: "Alma",
   floa: "Floa",
   avoir: "Avoir",
+  shopify: "Shopify (en ligne)",
   autre: "Autre",
 };
 

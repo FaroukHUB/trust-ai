@@ -19,7 +19,13 @@ L'application fonctionne selon **deux modes clairement séparés** :
   Voir **docs/SUPABASE_SETUP.md** pour l'activer pas à pas.
 
 > Les données de démonstration ne sont JAMAIS recopiées automatiquement vers
-> Supabase. Shopify, WhatsApp et OpenAI ne sont pas encore connectés.
+> Supabase. WhatsApp et OpenAI ne sont pas encore connectés.
+
+En mode connecté, **Shopify** peut être branché (phase 3) : commandes
+reçues automatiquement par webhooks signés (HMAC), catalogue synchronisé
+(webhooks + bouton d'import), clients et acquisition mesurée (UTM, première
+page) — en lecture seule, sans jamais écraser le suivi d'approvisionnement
+saisi par l'équipe. Voir **docs/SHOPIFY_SETUP.md**.
 
 ## Démarrer
 
@@ -126,10 +132,11 @@ Règles clés du prototype :
 
 ## Architecture cible (phases suivantes)
 
-1. **Shopify** enverra les nouvelles commandes automatiquement par **webhook**
-   (`orders/create`, `orders/updated`) vers une route API, avec vérification
-   de signature (`SHOPIFY_WEBHOOK_SECRET`). Les colonnes `shopify_*` et leurs
-   contraintes d'unicité sont déjà prêtes dans le schéma Supabase.
+1. **Shopify** (FAIT en phase 3) : webhooks `orders/create|updated` et
+   `products/create|update` vérifiés par signature HMAC
+   (`/api/webhooks/shopify`), synchronisation complète du catalogue via
+   l'API Admin (`/api/shopify/sync-products`, réservée aux rôles catalogue),
+   journal `shopify_webhook_events`, upserts idempotents.
 2. **Supabase** (FAIT en V2) : schéma relationnel versionné dans
    `supabase/migrations`, RLS sur toutes les tables, fonctions RPC atomiques
    portant les règles métier V1.2, seed référentiel fictif, tests SQL dans

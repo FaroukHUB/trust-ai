@@ -3,6 +3,9 @@
 import { useMemo, useState } from "react";
 import { BookOpen, RefreshCw, Search } from "lucide-react";
 import { useData } from "@/lib/store/DataProvider";
+import { useSession } from "@/lib/auth/SessionProvider";
+import { hasPermission } from "@/lib/permissions";
+import { useToast } from "@/components/ui/Toast";
 import { Badge } from "@/components/ui/Badge";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -12,10 +15,35 @@ import { productCategoryLabels, productSourceLabels } from "@/lib/labels";
 import type { ProductCategory } from "@/lib/types";
 
 export default function CataloguePage() {
-  const { db } = useData();
+  const { db, mode, refresh } = useData();
+  const { profile } = useSession();
+  const { notify } = useToast();
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<"all" | ProductCategory>("all");
   const [activeFilter, setActiveFilter] = useState<"all" | "actifs" | "inactifs">("actifs");
+  const [syncing, setSyncing] = useState(false);
+
+  const canSync =
+    mode === "connected" && profile !== null && hasPermission(profile.role, "gerer_catalogue");
+
+  const syncFromShopify = async () => {
+    setSyncing(true);
+    try {
+      const response = await fetch("/api/shopify/sync-products", { method: "POST" });
+      const body = await response.json();
+      if (!response.ok) {
+        notify(body.error ?? "Synchronisation impossible.", "error");
+      } else {
+        notify(
+          `Catalogue synchronisé : ${body.products} produit(s), ${body.variants} variante(s).`,
+        );
+        await refresh();
+      }
+    } catch {
+      notify("Erreur réseau pendant la synchronisation.", "error");
+    }
+    setSyncing(false);
+  };
 
   const rows = useMemo(() => {
     if (!db) return [];
@@ -50,12 +78,26 @@ export default function CataloguePage() {
 
   return (
     <div className="flex flex-col gap-5">
-      <div>
-        <h1 className="text-xl font-bold">Catalogue</h1>
-        <p className="text-sm" style={{ color: "var(--muted)" }}>
-          Catalogue centralisé des produits et variantes. La synchronisation
-          Shopify est simulée : les vrais webhooks arriveront en phase 2.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Catalogue</h1>
+          <p className="text-sm" style={{ color: "var(--muted)" }}>
+            {mode === "connected"
+              ? "Catalogue centralisé. Les produits Shopify arrivent automatiquement par webhook ; la synchronisation manuelle importe tout le catalogue."
+              : "Catalogue centralisé des produits et variantes. La synchronisation Shopify est simulée en mode démonstration."}
+          </p>
+        </div>
+        {canSync ? (
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={syncFromShopify}
+            disabled={syncing}
+          >
+            <RefreshCw size={16} aria-hidden className={syncing ? "animate-spin" : undefined} />
+            {syncing ? "Synchronisation…" : "Synchroniser depuis Shopify"}
+          </button>
+        ) : null}
       </div>
 
       <div className="card grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-4">

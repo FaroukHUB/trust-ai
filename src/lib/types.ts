@@ -422,6 +422,8 @@ export type PaymentMethod =
   | "alma"
   | "floa"
   | "avoir"
+  /** Encaissement en ligne reçu automatiquement via webhook Shopify. */
+  | "shopify"
   | "autre";
 
 export type PaymentStatus =

@@ -85,7 +85,7 @@ describe("Hygiène des secrets", () => {
     }
   });
 
-  it("aucune service role key ni URL Postgres dans le code applicatif", () => {
+  it("aucune clé secrète en dur ni URL Postgres dans le code applicatif", () => {
     const offenders: string[] = [];
     const scan = (dir: string) => {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -93,8 +93,21 @@ describe("Hygiène des secrets", () => {
         if (entry.isDirectory()) scan(full);
         else if (/\.(ts|tsx)$/.test(entry.name) && !/\.test\.ts$/.test(entry.name)) {
           const content = fs.readFileSync(full, "utf8");
-          if (/SERVICE_ROLE|sb_secret_|postgres(ql)?:\/\//i.test(content)) {
+          // Valeur de clé secrète en dur (sb_secret_ suivi de matière de clé)
+          // ou URL Postgres directe : interdit partout.
+          if (/sb_secret_[a-z0-9]/i.test(content) || /postgres(ql)?:\/\//i.test(content)) {
             offenders.push(full);
+          }
+          // Les noms de variables secrètes ne doivent JAMAIS être exposés
+          // au navigateur via un préfixe NEXT_PUBLIC_.
+          if (/NEXT_PUBLIC_[A-Z_]*(SECRET|SERVICE_ROLE)/.test(content)) {
+            offenders.push(`${full} (secret exposé en NEXT_PUBLIC_)`);
+          }
+          // Aucun secret serveur assigné en littéral (NAME = "valeur").
+          for (const name of ["SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY", "SHOPIFY_ADMIN_ACCESS_TOKEN", "SHOPIFY_WEBHOOK_SECRET"]) {
+            if (new RegExp(`${name}\\s*[:=]\\s*["'\`][^"'\`]`).test(content)) {
+              offenders.push(`${full} (${name} assigné en littéral)`);
+            }
           }
         }
       }

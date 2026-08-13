@@ -23,6 +23,16 @@ function isPublicPath(pathname: string): boolean {
   );
 }
 
+/**
+ * Les routes API gèrent leur propre sécurité et ne doivent JAMAIS être
+ * redirigées vers /connexion : les webhooks Shopify vérifient la signature
+ * HMAC, les routes internes vérifient la session et renvoient 401/403 en
+ * JSON.
+ */
+function isApiPath(pathname: string): boolean {
+  return pathname.startsWith("/api/");
+}
+
 export async function middleware(request: NextRequest) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key =
@@ -31,6 +41,11 @@ export async function middleware(request: NextRequest) {
 
   // Mode démonstration : aucune authentification requise.
   if (!url || !key) {
+    return NextResponse.next();
+  }
+
+  // Routes API : sécurité gérée dans chaque route (HMAC ou session).
+  if (isApiPath(request.nextUrl.pathname)) {
     return NextResponse.next();
   }
 
