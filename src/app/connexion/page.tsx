@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import { LogIn } from "lucide-react";
 import { getAppMode } from "@/lib/config";
+import { TrustLogoTile } from "@/components/ui/TrustLogo";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 /**
@@ -119,13 +120,7 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center p-6">
       <div className="card w-full max-w-sm p-6">
         <div className="mb-6 flex items-center gap-2">
-          <div
-            className="flex h-10 w-10 items-center justify-center rounded-md text-sm font-bold text-white"
-            style={{ background: "var(--primary)" }}
-            aria-hidden
-          >
-            TA
-          </div>
+          <TrustLogoTile size={40} />
           <div>
             <p className="font-bold leading-tight">TRUST AI</p>
             <p className="text-xs leading-tight" style={{ color: "var(--muted)" }}>

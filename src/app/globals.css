@@ -3,30 +3,34 @@
 @tailwind utilities;
 
 /*
- * Palette TRUST AI — sobre et professionnelle.
+ * Palette TRUST AI — identité Trust Industrie : beige chaud et noir,
+ * alignée sur trust-industrie.com et le logo de la marque.
  * Toutes les couleurs passent par des variables CSS pour pouvoir être
- * ajustées facilement sans toucher aux composants.
+ * ajustées facilement sans toucher aux composants. Les couleurs d'état
+ * (succès, alerte, danger…) restent des teintes universelles pour ne pas
+ * perdre leur lisibilité métier.
  */
 :root {
-  --background: #f6f7f9;
-  --surface: #ffffff;
-  --surface-muted: #f1f3f6;
-  --border: #e3e6eb;
-  --foreground: #1a2233;
-  --muted: #64748b;
-  --primary: #1d4ed8;
-  --primary-strong: #1e40af;
-  --primary-soft: #e8eefc;
+  --background: #eae2d2;
+  --surface: #f7f3e9;
+  --surface-muted: #efe8d8;
+  --border: #d9cfb9;
+  --foreground: #161513;
+  --muted: #6e6654;
+  --primary: #161513;
+  --primary-strong: #000000;
+  --primary-soft: #e0d7c0;
+  --logo-beige: #e8dfce;
   --success: #15803d;
-  --success-soft: #e6f4ea;
+  --success-soft: #e4efdd;
   --warning: #b45309;
-  --warning-soft: #fdf1e0;
+  --warning-soft: #f6ead2;
   --danger: #b91c1c;
-  --danger-soft: #fdecec;
+  --danger-soft: #f6e2da;
   --info: #0369a1;
-  --info-soft: #e5f3fa;
+  --info-soft: #e2ecec;
   --violet: #6d28d9;
-  --violet-soft: #f0eafa;
+  --violet-soft: #eae3e8;
 }
 
 html,

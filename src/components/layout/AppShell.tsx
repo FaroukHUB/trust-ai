@@ -29,6 +29,7 @@ import { canAccessPage, hasPermission } from "@/lib/permissions";
 import { roleLabels } from "@/lib/labels";
 import { useToast } from "@/components/ui/Toast";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { TrustLogoTile } from "@/components/ui/TrustLogo";
 import { LoadingState } from "@/components/ui/LoadingState";
 
 const navigation = [
@@ -250,13 +251,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const sidebarContent = (
     <div className="flex h-full flex-col gap-6 p-4">
       <div className="flex items-center gap-2 px-2">
-        <div
-          className="flex h-9 w-9 items-center justify-center rounded-md text-sm font-bold text-white"
-          style={{ background: "var(--primary)" }}
-          aria-hidden
-        >
-          TA
-        </div>
+        <TrustLogoTile size={36} />
         <div>
           <p className="text-sm font-bold leading-tight">TRUST AI</p>
           <p className="text-xs leading-tight" style={{ color: "var(--muted)" }}>
