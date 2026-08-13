@@ -7,7 +7,7 @@ import {
   verifyShopifyHmac,
 } from "@/lib/shopify/mapping";
 import {
-  getShopifyStoreDomain,
+  getAllowedShopDomains,
   getWebhookSigningSecrets,
   isShopifyWebhookConfigured,
 } from "@/lib/shopify/config";
@@ -67,11 +67,15 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Signature HMAC invalide." }, { status: 401 });
   }
 
-  // 3. La boutique émettrice doit être exactement la nôtre.
+  // 3. La boutique émettrice doit figurer dans la liste blanche.
   const shopDomain = request.headers.get("x-shopify-shop-domain");
-  if (!verifyShopDomain(shopDomain, getShopifyStoreDomain())) {
+  if (!verifyShopDomain(shopDomain, getAllowedShopDomains())) {
+    // Le domaine reçu est indiqué pour permettre de corriger la
+    // configuration (il n'a rien de secret : Shopify l'envoie en clair).
     return NextResponse.json(
-      { error: "Boutique émettrice inattendue." },
+      {
+        error: `Boutique émettrice inattendue : « ${shopDomain ?? "domaine absent"} » ne figure pas dans SHOPIFY_STORE_DOMAIN. Ajoutez-le (plusieurs domaines possibles, séparés par des virgules) — voir docs/SHOPIFY_SETUP.md.`,
+      },
       { status: 401 },
     );
   }

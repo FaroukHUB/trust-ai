@@ -106,13 +106,27 @@ Dans **Vercel** → Environment Variables (Production **et** Preview) :
 
 | Key | Value |
 | --- | --- |
-| `SHOPIFY_STORE_DOMAIN` | ex. `ma-boutique.myshopify.com` (domaine technique) |
+| `SHOPIFY_STORE_DOMAIN` | domaine(s) technique(s), ex. `wn02qe-0w.myshopify.com` — voir ci-dessous |
 | `SHOPIFY_CLIENT_ID` | le Client ID |
 | `SHOPIFY_CLIENT_SECRET` | le Client Secret |
 | `SHOPIFY_API_VERSION` | *(facultatif — défaut `2026-01`)* |
 
-Le domaine technique est visible dans l'URL de ton admin :
-`admin.shopify.com/store/ma-boutique` → `ma-boutique.myshopify.com`.
+> ⚠️ **Attention au bon domaine** : le nom court visible dans l'URL de
+> l'admin (`admin.shopify.com/store/ma-boutique`) n'est PAS toujours le
+> domaine `.myshopify.com` réel de la boutique. Le domaine qui compte est
+> celui que Shopify met dans l'en-tête `X-Shopify-Shop-Domain` de ses
+> webhooks (souvent une suite de caractères, ex. `wn02qe-0w.myshopify.com`).
+> Où le trouver :
+>
+> * admin Shopify → **Paramètres → Domaines** : le domaine non modifiable
+>   en `.myshopify.com` ;
+> * ou Dev Dashboard → ton app → **Surveillance / Journaux** → ouvre une
+>   livraison de webhook → en-tête `X-Shopify-Shop-Domain`.
+>
+> En cas de doute, déclare **les deux** séparés par une virgule :
+> `wn02qe-0w.myshopify.com,ma-boutique.myshopify.com`. C'est une liste
+> blanche : seules ces boutiques sont acceptées, et le premier domaine
+> sert aux appels à l'API Admin.
 
 > ℹ️ **Pas de token à copier** : l'application demande elle-même ses access
 > tokens à Shopify avec ces identifiants et les renouvelle automatiquement
@@ -178,7 +192,12 @@ créé automatiquement au chargement d'une page.)
   différente ?). Après rotation du secret, Shopify peut mettre jusqu'à une
   heure à signer avec la nouvelle valeur.
 * **401 « Boutique émettrice inattendue »** : `SHOPIFY_STORE_DOMAIN` ne
-  correspond pas au domaine `*.myshopify.com` réel de la boutique.
+  correspond pas au domaine `*.myshopify.com` réel de la boutique. Le
+  message d'erreur indique le domaine reçu : ajoute-le à la variable
+  (plusieurs domaines possibles, séparés par des virgules) et redéploie.
+  Les webhooks refusés sont automatiquement **retentés par Shopify pendant
+  48 h** : les commandes rejetées entre-temps arrivent d'elles-mêmes une
+  fois la correction déployée.
 * **503** : une variable manque — vérifie l'orthographe exacte dans Vercel
   et redéploie.
 * **Échec d'authentification (HTTP 4xx) lors de la synchronisation** :

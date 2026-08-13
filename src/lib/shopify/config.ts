@@ -14,9 +14,30 @@
  *   SHOPIFY_WEBHOOK_SECRET (clé de signature de la section Notifications)
  */
 
+function normalizeDomain(value: string): string {
+  return value.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+}
+
+/**
+ * Domaines de boutique autorisés. SHOPIFY_STORE_DOMAIN accepte PLUSIEURS
+ * valeurs séparées par des virgules : une même boutique est en effet
+ * joignable par son domaine canonique (`wn02qe-0w.myshopify.com`, celui que
+ * Shopify met dans l'en-tête `X-Shopify-Shop-Domain` des webhooks) et par
+ * son nom court d'administration (`ma-boutique.myshopify.com`, celui qu'on
+ * lit dans l'URL de l'admin). Déclarer les deux évite de rejeter des
+ * webhooks légitimes, tout en restant une liste blanche stricte : rien
+ * n'est déduit du contenu du webhook.
+ */
+export function getAllowedShopDomains(): string[] {
+  return (process.env.SHOPIFY_STORE_DOMAIN ?? "")
+    .split(",")
+    .map(normalizeDomain)
+    .filter(Boolean);
+}
+
+/** Domaine utilisé pour APPELER l'API Admin (le premier déclaré). */
 export function getShopifyStoreDomain(): string | undefined {
-  const domain = process.env.SHOPIFY_STORE_DOMAIN?.trim();
-  return domain ? domain.replace(/^https?:\/\//, "").replace(/\/.*$/, "") : undefined;
+  return getAllowedShopDomains()[0];
 }
 
 export function getShopifyClientId(): string | undefined {

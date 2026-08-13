@@ -51,16 +51,23 @@ export function verifyShopifyHmac(
 
 /**
  * Vérifie que le webhook provient bien de NOTRE boutique : l'en-tête
- * X-Shopify-Shop-Domain doit correspondre exactement à
- * SHOPIFY_STORE_DOMAIN. On ne fait jamais confiance aux données d'identité
- * contenues dans le payload lui-même.
+ * X-Shopify-Shop-Domain doit correspondre exactement à l'un des domaines
+ * déclarés dans SHOPIFY_STORE_DOMAIN. Une boutique est joignable sous deux
+ * formes (domaine canonique `wn02qe-0w.myshopify.com` et nom court
+ * d'administration), d'où la liste — qui reste une liste BLANCHE explicite :
+ * on ne fait jamais confiance aux données d'identité contenues dans le
+ * payload lui-même.
  */
 export function verifyShopDomain(
   headerDomain: string | null,
-  expectedDomain: string | undefined,
+  expected: string | string[] | undefined,
 ): boolean {
-  if (!headerDomain || !expectedDomain) return false;
-  return headerDomain.trim().toLowerCase() === expectedDomain.trim().toLowerCase();
+  if (!headerDomain || !expected) return false;
+  const allowed = (Array.isArray(expected) ? expected : [expected])
+    .map((d) => d.trim().toLowerCase())
+    .filter(Boolean);
+  if (allowed.length === 0) return false;
+  return allowed.includes(headerDomain.trim().toLowerCase());
 }
 
 // ---------------------------------------------------------------------------

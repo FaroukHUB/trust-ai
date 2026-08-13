@@ -9,7 +9,12 @@ import {
   verifyShopDomain,
   verifyShopifyHmac,
 } from "./mapping";
-import { getWebhookSigningSecrets, isShopifyAdminConfigured } from "./config";
+import {
+  getAllowedShopDomains,
+  getShopifyStoreDomain,
+  getWebhookSigningSecrets,
+  isShopifyAdminConfigured,
+} from "./config";
 import { createHmac } from "node:crypto";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -149,6 +154,31 @@ describe("Vérification des webhooks 2026", () => {
     ).toBe(false);
     expect(verifyShopDomain(null, "ma-boutique.myshopify.com")).toBe(false);
     expect(verifyShopDomain("ma-boutique.myshopify.com", undefined)).toBe(false);
+  });
+
+  it("accepte plusieurs domaines déclarés pour la MÊME boutique", () => {
+    // Une boutique répond sous son domaine canonique (celui des webhooks)
+    // ET sous son nom court d'administration : les deux sont déclarables.
+    process.env.SHOPIFY_STORE_DOMAIN =
+      "ma-boutique.myshopify.com, wn02qe-0w.myshopify.com";
+    const allowed = getAllowedShopDomains();
+    expect(allowed).toEqual(["ma-boutique.myshopify.com", "wn02qe-0w.myshopify.com"]);
+    // Le premier domaine déclaré sert aux appels API.
+    expect(getShopifyStoreDomain()).toBe("ma-boutique.myshopify.com");
+    expect(verifyShopDomain("wn02qe-0w.myshopify.com", allowed)).toBe(true);
+    expect(verifyShopDomain("ma-boutique.myshopify.com", allowed)).toBe(true);
+    // La liste reste une liste BLANCHE : rien d'autre ne passe.
+    expect(verifyShopDomain("boutique-pirate.myshopify.com", allowed)).toBe(false);
+    expect(verifyShopDomain("wn02qe-0w.myshopify.com", [])).toBe(false);
+  });
+
+  it("normalise les domaines déclarés (protocole, chemin, espaces)", () => {
+    process.env.SHOPIFY_STORE_DOMAIN =
+      " https://ma-boutique.myshopify.com/admin , wn02qe-0w.myshopify.com ";
+    expect(getAllowedShopDomains()).toEqual([
+      "ma-boutique.myshopify.com",
+      "wn02qe-0w.myshopify.com",
+    ]);
   });
 });
 
