@@ -31,34 +31,53 @@ Prérequis : le mode connecté Supabase fonctionne (`docs/SUPABASE_SETUP.md`).
 * **Jamais écrasé** : le suivi d'approvisionnement saisi par l'équipe
   (statuts, fournisseurs, dépôts) n'est jamais modifié par un webhook.
 
-## 1. Appliquer les migrations avec le CLI Supabase
+## 1. Appliquer les migrations Shopify (4 à 7)
 
-Les migrations 4 et 5 (intégration Shopify + idempotence) doivent être
-appliquées. Le bon outil est le **système de migrations Supabase** (ne plus
-copier les fichiers un par un dans SQL Editor) :
+L'intégration Shopify a besoin des migrations `20260813000400` à
+`20260814000700` (journal des webhooks, idempotence, SKU en doublon,
+écritures groupées), en plus des migrations 1 à 3 du guide Supabase.
+
+### Parcours A — sans rien installer (SQL Editor) ✅ recommandé
+
+Pour chaque fichier de `supabase/migrations/` PAS ENCORE appliqué, **dans
+l'ordre des noms de fichiers** : ouvre-le sur GitHub (bouton **Raw**),
+copie tout, colle dans Dashboard Supabase → **SQL Editor** → **Run**.
+Résultat attendu : `Success. No rows returned`. En cas d'erreur rouge,
+arrête-toi et note le message.
+
+Vérification (à coller telle quelle dans SQL Editor — tout doit être
+`true`) :
+
+```sql
+select
+  exists (select 1 from information_schema.tables
+          where table_schema = 'public' and table_name = 'shopify_webhook_events')
+    as migration_4,
+  exists (select 1 from information_schema.columns
+          where table_schema = 'public' and table_name = 'shopify_webhook_events'
+            and column_name = 'webhook_id')
+    as migration_5,
+  exists (select 1 from pg_indexes
+          where schemaname = 'public' and indexname = 'product_variants_manual_sku_key')
+    as migration_6,
+  exists (select 1 from pg_constraint
+          where conname = 'product_variants_shopify_id_key' and contype = 'u')
+    as migration_7;
+```
+
+### Parcours B — avec le CLI Supabase (optionnel, pour développeurs)
 
 ```bash
 npx supabase login
-npx supabase link --project-ref PROJECT_REF
-npx supabase db push
+npx supabase link --project-ref PROJECT_REF   # Settings → General
+npx supabase db push                          # applique ce qui manque
 ```
 
-`PROJECT_REF` = Settings → General dans le Dashboard Supabase.
-
-> **Cas particulier — migrations 1 à 3 déjà appliquées via SQL Editor** :
-> le CLI ne le sait pas et voudra tout rejouer. Marque-les d'abord comme
-> déjà appliquées (aucune donnée modifiée) :
->
-> ```bash
-> npx supabase migration repair --status applied 20260812000100
-> npx supabase migration repair --status applied 20260812000200
-> npx supabase migration repair --status applied 20260812000300
-> # idem 20260813000400 si tu l'avais déjà collée dans SQL Editor
-> npx supabase db push   # applique uniquement ce qui manque
-> ```
->
-> Vérification : `npx supabase migration list` doit montrer les 5
-> migrations présentes des deux côtés (Local et Remote).
+> **Migrations déjà appliquées via SQL Editor ?** Marque-les d'abord comme
+> appliquées (`npx supabase migration repair --status applied
+> <horodatage>` pour chacune), puis `npx supabase db push`. Vérification :
+> `npx supabase migration list` doit montrer les 7 migrations des deux
+> côtés (Local et Remote).
 
 ## 2. Variables Supabase côté serveur
 

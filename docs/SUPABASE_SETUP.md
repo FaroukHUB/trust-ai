@@ -39,35 +39,51 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_xxxx
 Puis relance `npm run dev`. L'application détecte automatiquement le mode
 connecté et affiche la page de connexion.
 
-## 4. Lier le CLI Supabase et appliquer les migrations
+## 4. Appliquer les migrations
 
 Le schéma complet (tables, contraintes, sécurité RLS, fonctions métier) est
 versionné dans `supabase/migrations/`. Ne crée PAS les tables à la main dans
 le Dashboard.
 
+### Parcours A — sans rien installer (SQL Editor) ✅ recommandé
+
+Aucun outil à installer, tout se passe dans le navigateur :
+
+1. Ouvre chaque fichier de `supabase/migrations/` sur GitHub (bouton
+   **Raw** pour avoir le texte brut) — **dans l'ordre des noms de
+   fichiers** (les dates au début des noms donnent l'ordre) ;
+2. Copie TOUT le contenu du fichier ;
+3. Dashboard Supabase → **SQL Editor** → nouvelle requête → colle →
+   **Run** ;
+4. Résultat attendu à chaque fois : `Success. No rows returned`. Si une
+   erreur rouge apparaît, ARRÊTE-toi et note le message — n'enchaîne pas
+   les fichiers suivants.
+
+Puis le référentiel (magasins, dépôts, fournisseurs, extrait de
+catalogue) : même procédure avec `supabase/seed.sql`. Le seed ne contient
+AUCUNE donnée personnelle et aucun compte : il est sûr.
+
+> Chaque migration ne s'applique qu'UNE fois. En cas de doute (« l'ai-je
+> déjà collée ? »), un second Run échoue proprement (« already exists »)
+> sans rien casser — note simplement quelles migrations sont passées.
+
+### Parcours B — avec le CLI Supabase (optionnel, pour développeurs)
+
+Si tu travailles depuis un poste avec le projet cloné et que tu préfères
+l'outillage en ligne de commande :
+
 ```bash
-# Installer le CLI (une seule fois)
-npm install -g supabase
-
-# Se connecter (ouvre le navigateur)
-supabase login
-
-# Lier le dossier au projet (le "project ref" est dans Settings → General)
-supabase link --project-ref XXXX
-
-# Appliquer les migrations sur la base distante
-supabase db push
+npm install -g supabase   # une seule fois
+supabase login            # ouvre le navigateur
+supabase link --project-ref XXXX   # "project ref" : Settings → General
+supabase db push          # applique les migrations manquantes
+supabase db push --include-seed    # + le référentiel (optionnel)
 ```
 
-Optionnel : charger le référentiel fictif (magasins, dépôts, fournisseurs,
-extrait de catalogue) :
-
-```bash
-supabase db push --include-seed
-# ou : psql "$(supabase db url)" -f supabase/seed.sql  (si tu utilises psql)
-```
-
-Le seed ne contient AUCUNE donnée personnelle et aucun compte : il est sûr.
+> **Migrations déjà appliquées via SQL Editor ?** Le CLI ne le sait pas et
+> voudrait tout rejouer. Marque-les d'abord comme appliquées (aucune
+> donnée modifiée) : `supabase migration repair --status applied
+> <horodatage>` pour chaque fichier déjà passé, puis `supabase db push`.
 
 ## 5. Créer le premier utilisateur (toi)
 
@@ -167,9 +183,11 @@ where id = (select id from auth.users where email = 'employe@exemple.fr');
 
 L'accès est coupé immédiatement (vérifié par la sécurité RLS).
 
-## Tests locaux des migrations et de la sécurité
+## Tests locaux des migrations et de la sécurité (développeurs uniquement)
 
-Si Docker et le CLI Supabase sont installés sur ta machine :
+Cette section est optionnelle et suppose un poste de développement avec
+Docker et le CLI Supabase — elle n'est PAS nécessaire pour utiliser
+l'application :
 
 ```bash
 supabase start          # démarre un Supabase local
@@ -199,7 +217,7 @@ ne laisse aucune donnée.
   (étape 8) et le dossier spam ; en dernier recours, Dashboard →
   Authentication → Users → « Send password recovery ».
 * **Réinitialiser complètement le schéma** (ATTENTION : efface les données
-  distantes) : `supabase db reset --linked`.
+  distantes ; réservé aux utilisateurs du CLI) : `supabase db reset --linked`.
 
 ## Étapes ultérieures (hors de ce guide)
 
