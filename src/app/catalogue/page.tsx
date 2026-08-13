@@ -22,25 +22,70 @@ export default function CataloguePage() {
   const [category, setCategory] = useState<"all" | ProductCategory>("all");
   const [activeFilter, setActiveFilter] = useState<"all" | "actifs" | "inactifs">("actifs");
   const [syncing, setSyncing] = useState(false);
+  const [syncedCount, setSyncedCount] = useState(0);
 
   const canSync =
     mode === "connected" && profile !== null && hasPermission(profile.role, "gerer_catalogue");
 
+  // Synchronisation page par page (100 produits par requête) : chaque appel
+  // serveur reste court, donc jamais de timeout, et la progression s'affiche
+  // au fil de l'import. Idempotent : relancer reprend sans créer de doublon.
   const syncFromShopify = async () => {
     setSyncing(true);
+    setSyncedCount(0);
+    let cursor: string | null = null;
+    let startedAt: string | null = null;
+    let products = 0;
+    let variants = 0;
+    let deactivated = 0;
     try {
-      const response = await fetch("/api/shopify/sync-products", { method: "POST" });
-      const body = await response.json();
-      if (!response.ok) {
-        notify(body.error ?? "Synchronisation impossible.", "error");
-      } else {
-        notify(
-          `Catalogue synchronisé : ${body.products} produit(s), ${body.variants} variante(s).`,
-        );
-        await refresh();
+      for (let page = 0; page < 500; page++) {
+        const response: Response = await fetch("/api/shopify/sync-products", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cursor, startedAt, totals: { products, variants } }),
+        });
+        let body: {
+          error?: string;
+          products?: number;
+          variants?: number;
+          deactivated?: number;
+          nextCursor?: string | null;
+          startedAt?: string;
+        } | null = null;
+        try {
+          body = await response.json();
+        } catch {
+          // réponse non JSON (coupure serveur) : traitée comme une erreur.
+        }
+        if (!response.ok || !body) {
+          notify(
+            body?.error ??
+              `Synchronisation interrompue (HTTP ${response.status}). Relancez-la : elle reprend sans créer de doublon.`,
+            "error",
+          );
+          if (products > 0) await refresh();
+          setSyncing(false);
+          return;
+        }
+        products += body.products ?? 0;
+        variants += body.variants ?? 0;
+        deactivated = body.deactivated ?? 0;
+        startedAt = body.startedAt ?? startedAt;
+        cursor = body.nextCursor ?? null;
+        setSyncedCount(products);
+        if (!cursor) break;
       }
+      notify(
+        `Catalogue synchronisé : ${products} produit(s), ${variants} variante(s)${deactivated > 0 ? ` ; ${deactivated} produit(s) désactivé(s) (absents de la boutique)` : ""}.`,
+      );
+      await refresh();
     } catch {
-      notify("Erreur réseau pendant la synchronisation.", "error");
+      notify(
+        "Erreur réseau pendant la synchronisation. Relancez-la : elle reprend sans créer de doublon.",
+        "error",
+      );
+      if (products > 0) await refresh();
     }
     setSyncing(false);
   };
@@ -95,7 +140,11 @@ export default function CataloguePage() {
             disabled={syncing}
           >
             <RefreshCw size={16} aria-hidden className={syncing ? "animate-spin" : undefined} />
-            {syncing ? "Synchronisation…" : "Synchroniser depuis Shopify"}
+            {syncing
+              ? syncedCount > 0
+                ? `Synchronisation… ${syncedCount} produit(s)`
+                : "Synchronisation…"
+              : "Synchroniser depuis Shopify"}
           </button>
         ) : null}
       </div>
@@ -233,7 +282,7 @@ export default function CataloguePage() {
                           >
                             <RefreshCw size={13} aria-hidden />
                             {product.lastSyncedAt
-                              ? `Synchronisé le ${formatDate(product.lastSyncedAt)} (simulation)`
+                              ? `Synchronisé le ${formatDate(product.lastSyncedAt)}${mode === "demo" ? " (simulation)" : ""}`
                               : "Jamais synchronisé"}
                           </span>
                         ) : (

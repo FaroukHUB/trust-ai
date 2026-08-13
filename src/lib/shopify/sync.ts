@@ -264,40 +264,37 @@ export async function upsertOrder(
   });
 }
 
-export async function upsertProduct(
+function chunk<T>(items: T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let i = 0; i < items.length; i += size) result.push(items.slice(i, i + size));
+  return result;
+}
+
+/**
+ * Upsert GROUPÉ de produits Shopify + variantes : une requête pour tous les
+ * produits, puis une par lot de 500 variantes — au lieu de deux requêtes par
+ * variante (qui dépassaient le temps maximal d'exécution serveur sur un vrai
+ * catalogue). Repose sur les contraintes uniques de la migration 7
+ * (organization_id + shopify_product_id ; shopify_variant_id).
+ */
+export async function upsertProductsBulk(
   supabase: SupabaseClient,
   organizationId: string,
-  mapped: MappedProduct,
-): Promise<void> {
+  mappedList: MappedProduct[],
+): Promise<{ products: number; variants: number }> {
+  if (mappedList.length === 0) return { products: 0, variants: 0 };
   const now = new Date().toISOString();
-  const { data: existing } = await supabase
-    .from("products")
-    .select("id")
-    .eq("organization_id", organizationId)
-    .eq("shopify_product_id", mapped.product.shopify_product_id)
-    .maybeSingle();
 
-  let productId: string;
-  if (existing) {
-    productId = (existing as { id: string }).id;
-    const { error } = await supabase
-      .from("products")
-      .update({
-        title: mapped.product.title,
-        short_description: mapped.product.short_description ?? null,
-        category: mapped.product.category,
-        shopify_handle: mapped.product.shopify_handle ?? null,
-        image_url: mapped.product.image_url ?? null,
-        active: mapped.product.active,
-        shopify_updated_at: mapped.product.shopify_updated_at ?? null,
-        last_synced_at: now,
-      })
-      .eq("id", productId);
-    if (error) throw new Error(`products: ${error.message}`);
-  } else {
-    const { data: created, error } = await supabase
-      .from("products")
-      .insert({
+  // ON CONFLICT ne peut pas toucher deux fois la même ligne dans un même
+  // ordre : dédoublonnage par identifiant Shopify (le dernier vu gagne).
+  const productById = new Map<string, MappedProduct>();
+  for (const mapped of mappedList) productById.set(mapped.product.shopify_product_id, mapped);
+  const uniqueProducts = Array.from(productById.values());
+
+  const { data, error } = await supabase
+    .from("products")
+    .upsert(
+      uniqueProducts.map((mapped) => ({
         organization_id: organizationId,
         title: mapped.product.title,
         short_description: mapped.product.short_description ?? null,
@@ -309,43 +306,54 @@ export async function upsertProduct(
         active: mapped.product.active,
         shopify_updated_at: mapped.product.shopify_updated_at ?? null,
         last_synced_at: now,
-      })
-      .select("id")
-      .single();
-    if (error) throw new Error(`products: ${error.message}`);
-    productId = (created as { id: string }).id;
-  }
+      })),
+      { onConflict: "organization_id,shopify_product_id" },
+    )
+    .select("id, shopify_product_id");
+  if (error) throw new Error(`products: ${error.message}`);
 
-  for (const variant of mapped.variants) {
-    const { data: existingVariant } = await supabase
-      .from("product_variants")
-      .select("id")
-      .eq("shopify_variant_id", variant.shopify_variant_id)
-      .maybeSingle();
-    if (existingVariant) {
-      const { error } = await supabase
-        .from("product_variants")
-        .update({
-          name: variant.name,
-          sku: variant.sku,
-          barcode: variant.barcode ?? null,
-          price_cents: variant.price_cents,
-          shopify_updated_at: mapped.product.shopify_updated_at ?? null,
-        })
-        .eq("id", (existingVariant as { id: string }).id);
-      if (error) throw new Error(`product_variants: ${error.message}`);
-    } else {
-      const { error } = await supabase.from("product_variants").insert({
+  const idByShopifyId = new Map<string, string>(
+    ((data ?? []) as { id: string; shopify_product_id: string }[]).map((row) => [
+      row.shopify_product_id,
+      row.id,
+    ]),
+  );
+
+  const variantById = new Map<string, Record<string, unknown>>();
+  for (const mapped of uniqueProducts) {
+    const productId = idByShopifyId.get(mapped.product.shopify_product_id);
+    if (!productId) throw new Error(`products: identifiant absent après upsert (${mapped.product.shopify_product_id})`);
+    for (const variant of mapped.variants) {
+      variantById.set(variant.shopify_variant_id, {
         product_id: productId,
         shopify_variant_id: variant.shopify_variant_id,
         name: variant.name,
         sku: variant.sku,
         barcode: variant.barcode ?? null,
         price_cents: variant.price_cents,
+        shopify_updated_at: mapped.product.shopify_updated_at ?? null,
       });
-      if (error) throw new Error(`product_variants: ${error.message}`);
     }
   }
+  let variants = 0;
+  for (const rows of chunk(Array.from(variantById.values()), 500)) {
+    const { error: variantError } = await supabase
+      .from("product_variants")
+      .upsert(rows, { onConflict: "shopify_variant_id" });
+    if (variantError) throw new Error(`product_variants: ${variantError.message}`);
+    variants += rows.length;
+  }
+
+  return { products: uniqueProducts.length, variants };
+}
+
+/** Upsert d'UN produit (webhooks products/create | products/update). */
+export async function upsertProduct(
+  supabase: SupabaseClient,
+  organizationId: string,
+  mapped: MappedProduct,
+): Promise<void> {
+  await upsertProductsBulk(supabase, organizationId, [mapped]);
 }
 
 // ---------------------------------------------------------------------------
@@ -385,18 +393,13 @@ export interface CatalogueSyncResult {
   deactivated: number;
 }
 
-/**
- * Importe TOUT le catalogue Shopify (toutes les pages, toutes les
- * variantes) via GraphQL avec pagination par curseur. Idempotent : les
- * produits existants sont mis à jour, jamais dupliqués, et les données
- * métier internes (associations fournisseurs, produits manuels) ne sont
- * pas touchées. Les produits Shopify absents de la boutique (supprimés)
- * sont DÉSACTIVÉS — jamais effacés.
- *
- * Volume TRUST Industrie (quelques centaines de produits) : la pagination
- * par curseur tient largement dans les limites Vercel/Shopify. Au-delà de
- * ~10 000 produits, passer aux Bulk Operations (documenté, non nécessaire).
- */
+export interface CatalogueSyncPage extends CatalogueSyncResult {
+  /** Curseur de la page suivante — null quand tout le catalogue est parcouru. */
+  nextCursor: string | null;
+  /** Horodatage du DÉBUT du parcours, à repasser à chaque page. */
+  startedAt: string;
+}
+
 /**
  * Récupère TOUTES les pages de produits (pagination par curseur) et les
  * mappe — séparé de l'écriture pour être testé avec un fetch simulé.
@@ -418,6 +421,58 @@ export async function fetchAllProductNodes(
   return result;
 }
 
+/**
+ * Synchronise UNE page du catalogue Shopify (100 produits max) : la requête
+ * serveur reste courte quel que soit le volume — le navigateur enchaîne les
+ * pages tant que `nextCursor` n'est pas null. Idempotent : les produits
+ * existants sont mis à jour, jamais dupliqués, et les données métier
+ * internes (associations fournisseurs, produits manuels) ne sont pas
+ * touchées.
+ *
+ * En FIN de parcours (dernière page), les produits Shopify connus en base
+ * mais non revus pendant ce parcours (supprimés de la boutique) sont
+ * DÉSACTIVÉS — jamais effacés. Le repère est `last_synced_at < startedAt`,
+ * d'où l'horodatage de début repassé de page en page.
+ */
+export async function syncProductsPage(
+  supabase: SupabaseClient,
+  organizationId: string,
+  options: { cursor?: string | null; startedAt?: string | null } = {},
+  fetchImpl: typeof fetch = fetch,
+): Promise<CatalogueSyncPage> {
+  const startedAt = options.startedAt ?? new Date().toISOString();
+  const data: any = await shopifyGraphQL(
+    PRODUCTS_QUERY,
+    { cursor: options.cursor ?? null },
+    fetchImpl,
+  );
+  const connection = data.products;
+  const mapped: MappedProduct[] = (connection?.edges ?? []).map((edge: any) =>
+    mapGraphQLProductNode(edge.node),
+  );
+  const counts = await upsertProductsBulk(supabase, organizationId, mapped);
+  const nextCursor: string | null = connection?.pageInfo?.hasNextPage
+    ? (connection.pageInfo.endCursor as string)
+    : null;
+
+  let deactivated = 0;
+  if (!nextCursor) {
+    const { data: rows, error } = await supabase
+      .from("products")
+      .update({ active: false })
+      .eq("organization_id", organizationId)
+      .eq("source", "shopify")
+      .eq("active", true)
+      .or(`last_synced_at.is.null,last_synced_at.lt.${startedAt}`)
+      .select("id");
+    if (error) throw new Error(`products: ${error.message}`);
+    deactivated = ((rows ?? []) as { id: string }[]).length;
+  }
+
+  return { ...counts, nextCursor, startedAt, deactivated };
+}
+
+/** Parcours complet (toutes les pages) — utilisé par les tests. */
 export async function syncAllProducts(
   supabase: SupabaseClient,
   organizationId: string,
@@ -425,33 +480,22 @@ export async function syncAllProducts(
 ): Promise<CatalogueSyncResult> {
   let products = 0;
   let variants = 0;
-  const seenIds: string[] = [];
-
-  const allProducts = await fetchAllProductNodes(fetchImpl);
-  for (const mapped of allProducts) {
-    await upsertProduct(supabase, organizationId, mapped);
-    seenIds.push(mapped.product.shopify_product_id);
-    products += 1;
-    variants += mapped.variants.length;
-  }
-
-  // Archivage maîtrisé : produits Shopify connus en base mais absents de la
-  // boutique → désactivés (jamais supprimés, l'historique reste intact).
   let deactivated = 0;
-  const { data: known } = await supabase
-    .from("products")
-    .select("id, shopify_product_id")
-    .eq("organization_id", organizationId)
-    .eq("source", "shopify")
-    .eq("active", true)
-    .not("shopify_product_id", "is", null);
-  const seen = new Set(seenIds);
-  for (const row of (known ?? []) as { id: string; shopify_product_id: string }[]) {
-    if (!seen.has(row.shopify_product_id)) {
-      await supabase.from("products").update({ active: false }).eq("id", row.id);
-      deactivated += 1;
-    }
+  let cursor: string | null = null;
+  let startedAt: string | null = null;
+  for (let page = 0; page < MAX_SYNC_PAGES; page++) {
+    const result: CatalogueSyncPage = await syncProductsPage(
+      supabase,
+      organizationId,
+      { cursor, startedAt },
+      fetchImpl,
+    );
+    products += result.products;
+    variants += result.variants;
+    deactivated = result.deactivated;
+    startedAt = result.startedAt;
+    cursor = result.nextCursor;
+    if (!cursor) break;
   }
-
   return { products, variants, deactivated };
 }

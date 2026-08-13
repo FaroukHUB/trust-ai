@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _clearTokenCache, getShopifyAccessToken, ShopifyConfigError } from "./auth";
-import { fetchAllProductNodes } from "./sync";
+import { fetchAllProductNodes, syncProductsPage, upsertProductsBulk } from "./sync";
 import { ensureSubscriptions, listSubscriptionStatus } from "./webhooks";
 import {
   acquisitionSourceFromJourney,
@@ -235,6 +235,161 @@ describe("Import complet du catalogue (GraphQL, pagination)", () => {
     expect(mapped.product.category).toBe("tables");
     expect(mapped.product.shopify_handle).toBe("produit-7");
     expect(mapped.variants[0].name).toBe("Variante 1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Écritures groupées + synchronisation page par page
+// ---------------------------------------------------------------------------
+
+/**
+ * Client Supabase simulé : enregistre les upserts / updates et rend des
+ * identifiants déterministes (`id-{shopify_product_id}`) pour vérifier le
+ * rattachement des variantes à leur produit.
+ */
+function fakeSupabase() {
+  const upserts: { table: string; rows: any[]; options: any }[] = [];
+  const updates: { table: string; values: any; filters: string[] }[] = [];
+  const client = {
+    from(table: string) {
+      return {
+        upsert(rows: any[], options: any) {
+          upserts.push({ table, rows, options });
+          const outcome = { error: null as null };
+          return {
+            select: async () => ({
+              data: rows.map((row: any) => ({
+                id: `id-${row.shopify_product_id}`,
+                shopify_product_id: row.shopify_product_id,
+              })),
+              error: null,
+            }),
+            then: (resolve: (value: typeof outcome) => void) => resolve(outcome),
+          };
+        },
+        update(values: any) {
+          const entry = { table, values, filters: [] as string[] };
+          updates.push(entry);
+          const builder: any = {
+            eq: (column: string, value: unknown) => {
+              entry.filters.push(`${column}=${String(value)}`);
+              return builder;
+            },
+            or: (clause: string) => {
+              entry.filters.push(`or(${clause})`);
+              return builder;
+            },
+            select: async () => ({ data: [{ id: "id-obsolete" }], error: null }),
+          };
+          return builder;
+        },
+      };
+    },
+  };
+  return { client: client as any, upserts, updates };
+}
+
+describe("Écritures groupées (upsertProductsBulk)", () => {
+  it("un seul upsert produits + variantes rattachées et dédoublonnées", async () => {
+    const { client, upserts } = fakeSupabase();
+    const mapped = [
+      mapGraphQLProductNode(productNode(1, 2)),
+      mapGraphQLProductNode(productNode(2, 1)),
+      // Doublon volontaire du produit 1 : le dernier vu doit gagner, sans
+      // faire échouer l'ordre SQL (ON CONFLICT n'accepte pas deux fois la
+      // même ligne).
+      mapGraphQLProductNode(productNode(1, 2)),
+    ];
+    const result = await upsertProductsBulk(client, "org-1", mapped);
+
+    expect(result).toEqual({ products: 2, variants: 3 });
+    const productUpserts = upserts.filter((u) => u.table === "products");
+    const variantUpserts = upserts.filter((u) => u.table === "product_variants");
+    expect(productUpserts).toHaveLength(1);
+    expect(productUpserts[0].options.onConflict).toBe("organization_id,shopify_product_id");
+    expect(productUpserts[0].rows).toHaveLength(2);
+    expect(variantUpserts).toHaveLength(1);
+    expect(variantUpserts[0].options.onConflict).toBe("shopify_variant_id");
+    // Chaque variante est rattachée à l'identifiant BASE de son produit.
+    const byVariant = Object.fromEntries(
+      variantUpserts[0].rows.map((row: any) => [row.shopify_variant_id, row.product_id]),
+    );
+    expect(byVariant["10"]).toBe("id-1");
+    expect(byVariant["11"]).toBe("id-1");
+    expect(byVariant["20"]).toBe("id-2");
+  });
+
+  it("accepte deux variantes du même produit partageant le même SKU", async () => {
+    const { client, upserts } = fakeSupabase();
+    const node = productNode(5, 2);
+    node.variants.edges[0].node.sku = "SKU-COMMUN";
+    node.variants.edges[1].node.sku = "SKU-COMMUN";
+    await upsertProductsBulk(client, "org-1", [mapGraphQLProductNode(node)]);
+    const rows = upserts.find((u) => u.table === "product_variants")!.rows;
+    expect(rows.map((r: any) => r.sku)).toEqual(["SKU-COMMUN", "SKU-COMMUN"]);
+    expect(new Set(rows.map((r: any) => r.shopify_variant_id)).size).toBe(2);
+  });
+});
+
+describe("Synchronisation page par page (syncProductsPage)", () => {
+  it("page intermédiaire : renvoie le curseur, aucune désactivation", async () => {
+    process.env.SHOPIFY_STORE_DOMAIN = "test-boutique.myshopify.com";
+    process.env.SHOPIFY_ADMIN_ACCESS_TOKEN = "shpat_test";
+    const { client, updates } = fakeSupabase();
+    const mockFetch = vi.fn(async () =>
+      jsonResponse({
+        data: {
+          products: {
+            pageInfo: { hasNextPage: true, endCursor: "curseur-suivant" },
+            edges: [{ node: productNode(1, 2) }],
+          },
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    const page = await syncProductsPage(client, "org-1", {}, mockFetch);
+    expect(page.nextCursor).toBe("curseur-suivant");
+    expect(page.products).toBe(1);
+    expect(page.variants).toBe(2);
+    expect(page.startedAt).toBeTruthy();
+    expect(page.deactivated).toBe(0);
+    expect(updates).toHaveLength(0); // pas de désactivation en cours de parcours
+  });
+
+  it("dernière page : désactive les produits non revus depuis le début du parcours", async () => {
+    process.env.SHOPIFY_STORE_DOMAIN = "test-boutique.myshopify.com";
+    process.env.SHOPIFY_ADMIN_ACCESS_TOKEN = "shpat_test";
+    const { client, updates } = fakeSupabase();
+    const mockFetch = vi.fn(async () =>
+      jsonResponse({
+        data: {
+          products: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            edges: [{ node: productNode(3, 1) }],
+          },
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    const startedAt = "2026-08-13T10:00:00.000Z";
+    const page = await syncProductsPage(
+      client,
+      "org-1",
+      { cursor: "curseur-page-2", startedAt },
+      mockFetch,
+    );
+    expect(page.nextCursor).toBeNull();
+    expect(page.startedAt).toBe(startedAt); // conservé de page en page
+    expect(page.deactivated).toBe(1);
+    expect(updates).toHaveLength(1);
+    expect(updates[0].values).toEqual({ active: false });
+    // Ciblage : produits Shopify actifs de l'organisation, non revus.
+    expect(updates[0].filters).toContain("organization_id=org-1");
+    expect(updates[0].filters).toContain("source=shopify");
+    expect(updates[0].filters).toContain("active=true");
+    expect(updates[0].filters).toContain(
+      `or(last_synced_at.is.null,last_synced_at.lt.${startedAt})`,
+    );
   });
 });
 
