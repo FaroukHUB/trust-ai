@@ -19,24 +19,48 @@ type Payload = Record<string, any>;
 
 /**
  * Vérifie l'en-tête X-Shopify-Hmac-Sha256 : HMAC-SHA256 du corps BRUT de la
- * requête, encodé en base64, calculé avec le secret de signature Shopify.
+ * requête (lu AVANT tout parsing JSON), encodé en base64, calculé avec le
+ * Client Secret de l'application (les webhooks Shopify sont signés avec ce
+ * secret ; l'ancienne clé « Notifications » est acceptée en repli legacy).
  * Comparaison en temps constant (timingSafeEqual).
  */
 export function verifyShopifyHmac(
   rawBody: string,
   hmacHeader: string | null,
-  secret: string,
+  secretOrSecrets: string | string[],
 ): boolean {
-  if (!hmacHeader || !secret) return false;
-  const digest = createHmac("sha256", secret).update(rawBody, "utf8").digest();
+  const secrets = (Array.isArray(secretOrSecrets) ? secretOrSecrets : [secretOrSecrets])
+    .filter(Boolean);
+  if (!hmacHeader || secrets.length === 0) return false;
   let received: Buffer;
   try {
     received = Buffer.from(hmacHeader, "base64");
   } catch {
     return false;
   }
-  if (received.length !== digest.length) return false;
-  return timingSafeEqual(digest, received);
+  // Chaque secret candidat est essayé (temps constant par comparaison).
+  let valid = false;
+  for (const secret of secrets) {
+    const digest = createHmac("sha256", secret).update(rawBody, "utf8").digest();
+    if (received.length === digest.length && timingSafeEqual(digest, received)) {
+      valid = true;
+    }
+  }
+  return valid;
+}
+
+/**
+ * Vérifie que le webhook provient bien de NOTRE boutique : l'en-tête
+ * X-Shopify-Shop-Domain doit correspondre exactement à
+ * SHOPIFY_STORE_DOMAIN. On ne fait jamais confiance aux données d'identité
+ * contenues dans le payload lui-même.
+ */
+export function verifyShopDomain(
+  headerDomain: string | null,
+  expectedDomain: string | undefined,
+): boolean {
+  if (!headerDomain || !expectedDomain) return false;
+  return headerDomain.trim().toLowerCase() === expectedDomain.trim().toLowerCase();
 }
 
 // ---------------------------------------------------------------------------
@@ -148,8 +172,15 @@ export interface MappedOrder {
     unit_price_cents: number;
     discount_cents: number;
   }[];
-  /** Montant encaissé en ligne (si payé), en centimes. */
+  /**
+   * Montant NET réellement encaissé en ligne, en centimes, d'après
+   * financial_status (0 si en attente, annulé, remboursé ou voided).
+   * Aucune opération financière n'est inventée : ce montant reflète l'état
+   * Shopify.
+   */
   paidCents: number;
+  /** true si la commande a été annulée côté Shopify (cancelled_at). */
+  cancelled: boolean;
   journey: {
     landing_page?: string;
     referring_site?: string;
@@ -175,10 +206,19 @@ export function mapOrderPayload(payload: Payload): MappedOrder {
   const source = acquisitionSourceFromJourney(payload.landing_site, payload.referring_site);
 
   const financial = payload.financial_status as string | undefined;
-  const paidCents =
-    financial === "paid" || financial === "partially_refunded"
-      ? moneyStringToCents(payload.total_price)
-      : 0;
+  // Net encaissé selon Shopify : après remboursement partiel, Shopify
+  // expose le total courant (current_total_price). « refunded » et
+  // « voided » → plus rien d'encaissé.
+  let paidCents = 0;
+  if (financial === "paid") {
+    paidCents = moneyStringToCents(payload.current_total_price ?? payload.total_price);
+  } else if (financial === "partially_refunded" || financial === "partially_paid") {
+    paidCents = moneyStringToCents(payload.current_total_price ?? payload.total_price);
+  }
+  const cancelled = Boolean(payload.cancelled_at);
+  if (cancelled && (financial === "refunded" || financial === "voided")) {
+    paidCents = 0;
+  }
 
   return {
     customer: {
@@ -221,6 +261,7 @@ export function mapOrderPayload(payload: Payload): MappedOrder {
       discount_cents: moneyStringToCents(item.total_discount),
     })),
     paidCents,
+    cancelled,
     journey: {
       landing_page: payload.landing_site ?? undefined,
       referring_site: payload.referring_site ?? undefined,
@@ -303,5 +344,51 @@ export function mapProductPayload(payload: Payload): MappedProduct {
       barcode: variant.barcode || undefined,
       price_cents: moneyStringToCents(variant.price),
     })),
+  };
+}
+
+/**
+ * Transforme un nœud produit de l'API Admin GRAPHQL (utilisé par la
+ * synchronisation complète du catalogue — les endpoints REST produits sont
+ * dépréciés pour les nouvelles applications). Les identifiants GID
+ * (« gid://shopify/Product/123 ») sont normalisés vers leur partie
+ * numérique, identique à celle des payloads de webhooks.
+ */
+export function mapGraphQLProductNode(node: Payload): MappedProduct {
+  const numericId = (gid: string | null | undefined): string | undefined => {
+    if (!gid) return undefined;
+    const match = String(gid).match(/\/(\d+)$/);
+    return match ? match[1] : String(gid);
+  };
+  const productId = numericId(node.id) ?? String(node.id);
+  const variants: Payload[] = (node.variants?.edges ?? []).map((e: Payload) => e.node);
+  return {
+    product: {
+      shopify_product_id: productId,
+      title: node.title ?? "Produit Shopify",
+      short_description: node.description
+        ? String(node.description).replace(/\s+/g, " ").trim().slice(0, 200) || undefined
+        : undefined,
+      category: categoryFromProductType(node.productType, node.title),
+      shopify_handle: node.handle ?? undefined,
+      image_url: node.featuredImage?.url ?? undefined,
+      source: "shopify",
+      // ACTIVE → actif ; ARCHIVED / DRAFT → inactif (archivage maîtrisé).
+      active: node.status ? node.status === "ACTIVE" : true,
+      shopify_updated_at: node.updatedAt ?? undefined,
+    },
+    variants: variants.map((variant) => {
+      const variantId = numericId(variant.id) ?? String(variant.id);
+      return {
+        shopify_variant_id: variantId,
+        name:
+          variant.title && variant.title !== "Default Title"
+            ? variant.title
+            : "Standard",
+        sku: variant.sku || `SHOPIFY-${variantId}`,
+        barcode: variant.barcode || undefined,
+        price_cents: moneyStringToCents(variant.price),
+      };
+    }),
   };
 }

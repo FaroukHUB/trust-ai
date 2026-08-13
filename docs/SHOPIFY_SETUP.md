@@ -1,130 +1,187 @@
-# Connecter Shopify à TRUST AI — guide pas à pas
+# Connecter Shopify à TRUST AI — guide 2026 pas à pas
 
-Ce guide active la réception automatique des commandes Shopify et la
-synchronisation du catalogue. Prérequis : le mode connecté Supabase
-fonctionne (voir `docs/SUPABASE_SETUP.md`).
+Ce guide suit le parcours Shopify actuel : une **application créée dans le
+Dev Dashboard** (dev.shopify.com), qui obtient elle-même ses access tokens
+(« Client Credentials Grant », renouvelés automatiquement toutes les 24 h)
+et dont le **Client Secret** signe les webhooks. Plus besoin de token
+permanent `shpat_` ni de webhooks créés à la main dans la section
+Notifications.
 
-> **Règle d'or** : les valeurs manipulées ici sont des SECRETS SERVEUR.
-> Elles se collent uniquement dans les variables d'environnement Vercel
-> (sans préfixe `NEXT_PUBLIC_`). Jamais dans le code, jamais dans une
-> conversation, jamais dans un fichier committé.
+Prérequis : le mode connecté Supabase fonctionne (`docs/SUPABASE_SETUP.md`).
+
+> **Règle d'or** : le Client Secret et la clé Supabase sont des SECRETS
+> SERVEUR. Ils se collent uniquement dans les variables d'environnement
+> Vercel (jamais de préfixe `NEXT_PUBLIC_`), jamais dans le code, jamais
+> dans une conversation.
 
 ## Ce que fait l'intégration
 
-* **Commandes** : chaque commande Shopify (création puis mises à jour)
-  arrive automatiquement dans TRUST AI via webhook — client, articles,
-  montants, paiement en ligne (règlement « Shopify (en ligne) »), première
-  page visitée et paramètres UTM (source *mesurée*).
-* **Catalogue** : les produits Shopify arrivent par webhook au fil de l'eau,
-  et un bouton « Synchroniser depuis Shopify » (page Catalogue, rôles
-  achats/direction/admin) importe tout le catalogue d'un coup.
-* **Idempotence** : rejouer un webhook ne crée jamais de doublon, et une
-  mise à jour Shopify n'écrase JAMAIS le suivi d'approvisionnement saisi
-  par l'équipe (statuts, fournisseurs, dépôts).
-* Chaque webhook reçu est journalisé dans la table
-  `shopify_webhook_events` (visible des administrateurs) pour le débogage.
+* **Commandes** : créations et mises à jour arrivent automatiquement par
+  webhook — client réutilisé, articles rattachés au catalogue, montants en
+  centimes, paiement en ligne net (« Shopify (en ligne) »), annulations et
+  remboursements Shopify répercutés sans inventer d'opération financière,
+  acquisition **mesurée** (première page, UTM, référent).
+* **Catalogue** : produits/variantes par webhook au fil de l'eau + bouton
+  « Synchroniser depuis Shopify » (import complet GraphQL, toutes les pages
+  et toutes les variantes ; produits supprimés de Shopify **désactivés**,
+  jamais effacés).
+* **Sécurité** : signature HMAC vérifiée sur le corps brut (temps
+  constant), domaine de boutique contrôlé (`X-Shopify-Shop-Domain`),
+  idempotence par `X-Shopify-Webhook-Id`, écritures serveur uniquement.
+* **Jamais écrasé** : le suivi d'approvisionnement saisi par l'équipe
+  (statuts, fournisseurs, dépôts) n'est jamais modifié par un webhook.
 
-## 1. Appliquer la migration 4
+## 1. Appliquer les migrations avec le CLI Supabase
 
-Si ce n'est pas déjà fait, exécute
-`supabase/migrations/20260813000400_shopify_integration.sql` sur la base
-(SQL Editor, comme les migrations précédentes, ou `supabase db push`).
+Les migrations 4 et 5 (intégration Shopify + idempotence) doivent être
+appliquées. Le bon outil est le **système de migrations Supabase** (ne plus
+copier les fichiers un par un dans SQL Editor) :
 
-## 2. Récupérer la clé secrète Supabase
-
-Dashboard **Supabase** → Settings → **API Keys** → section **Secret keys**
-→ copie la clé (commence par `sb_secret_`). C'est elle qui permet aux
-routes serveur d'écrire les commandes reçues.
-
-Dans **Vercel** → Environment Variables, ajoute (Production **et** Preview) :
-
-| Key | Value |
-| --- | --- |
-| `SUPABASE_SECRET_KEY` | la clé `sb_secret_…` |
-
-## 3. Créer une application personnalisée dans Shopify
-
-1. Admin Shopify → **Paramètres** (en bas à gauche) → **Applications et
-   canaux de vente** → **Développer des applications** ;
-   * si c'est la première fois : bouton **Autoriser le développement
-     d'applications personnalisées** ;
-2. **Créer une application** → nom : `TRUST AI` ;
-3. Onglet **Configuration** → **Admin API integration** → **Configurer** ;
-4. Coche uniquement les périmètres (scopes) :
-   * `read_products`
-   * `read_orders`
-5. **Enregistrer**, puis onglet **Identifiants API** → **Installer
-   l'application** ;
-6. Révèle le **jeton d'accès à l'API Admin** (commence par `shpat_`) —
-   ⚠️ il ne s'affiche qu'UNE fois : copie-le immédiatement dans Vercel :
-
-| Key | Value |
-| --- | --- |
-| `SHOPIFY_ADMIN_ACCESS_TOKEN` | le jeton `shpat_…` |
-| `SHOPIFY_STORE_DOMAIN` | le domaine technique, ex. `ma-boutique.myshopify.com` |
-
-(Le domaine technique est visible dans Paramètres → Domaines, ou dans
-l'URL de ton admin : `admin.shopify.com/store/ma-boutique`
-→ `ma-boutique.myshopify.com`.)
-
-## 4. Créer les webhooks
-
-1. Admin Shopify → **Paramètres** → **Notifications** → **Webhooks**
-   (tout en bas) ;
-2. Crée **4 webhooks**, tous au format **JSON**, tous vers la même URL :
-
-```
-https://trust-industrie-ai.vercel.app/api/webhooks/shopify
+```bash
+npx supabase login
+npx supabase link --project-ref PROJECT_REF
+npx supabase db push
 ```
 
-   * Événement **Création de commande** (orders/create)
-   * Événement **Mise à jour de commande** (orders/updated)
-   * Événement **Création de produit** (products/create)
-   * Événement **Mise à jour de produit** (products/update)
+`PROJECT_REF` = Settings → General dans le Dashboard Supabase.
 
-3. Sous la liste des webhooks, Shopify affiche une phrase du type
-   « Tous vos webhooks seront signés avec … » suivie d'une clé : c'est le
-   **secret de signature**. Copie-le dans Vercel :
+> **Cas particulier — migrations 1 à 3 déjà appliquées via SQL Editor** :
+> le CLI ne le sait pas et voudra tout rejouer. Marque-les d'abord comme
+> déjà appliquées (aucune donnée modifiée) :
+>
+> ```bash
+> npx supabase migration repair --status applied 20260812000100
+> npx supabase migration repair --status applied 20260812000200
+> npx supabase migration repair --status applied 20260812000300
+> # idem 20260813000400 si tu l'avais déjà collée dans SQL Editor
+> npx supabase db push   # applique uniquement ce qui manque
+> ```
+>
+> Vérification : `npx supabase migration list` doit montrer les 5
+> migrations présentes des deux côtés (Local et Remote).
+
+## 2. Variables Supabase côté serveur
+
+Dashboard Supabase → Settings → **API Keys** → section **Secret keys** →
+copie la clé `sb_secret_…`, puis dans **Vercel** → Environment Variables
+(Production **et** Preview) :
 
 | Key | Value |
 | --- | --- |
-| `SHOPIFY_WEBHOOK_SECRET` | la clé de signature affichée |
+| `SUPABASE_SECRET_KEY` | `sb_secret_…` |
 
-## 5. Redéployer et tester
+## 3. Créer l'application dans le Dev Dashboard Shopify
 
-1. Vercel → Deployments → **Redeploy** (les nouvelles variables ne
-   s'appliquent qu'aux nouveaux builds) ;
-2. Dans Shopify → Notifications → Webhooks → bouton **Envoyer un
-   webhook de test** sur « Création de commande » → il doit être accepté
-   (HTTP 200) ;
-3. Page **Catalogue** de TRUST AI → bouton **« Synchroniser depuis
-   Shopify »** → le catalogue réel s'importe (produits marqués
-   « Shopify » avec date de synchronisation) ;
-4. Passe une commande de test dans Shopify : elle doit apparaître dans
-   TRUST AI (onglet Shopify de la page Commandes) avec son règlement en
-   ligne et sa source d'acquisition mesurée.
+1. Va sur **https://dev.shopify.com** et connecte-toi avec le compte
+   propriétaire de la boutique → choisis ton **organisation** ;
+2. **Apps** → **Create app** → nom : `TRUST AI` ;
+3. Dans l'app → **Versions / Configuration** → section **Access scopes** :
+   ajoute les périmètres **`read_products`** et **`read_orders`**, puis
+   **Release** la version si demandé ;
+4. **Install** l'application sur ta boutique (menu de l'app → Install on
+   store → sélectionne la boutique) ;
+5. Onglet **Settings / Client credentials** de l'app : copie le
+   **Client ID** et le **Client Secret**.
+
+Dans **Vercel** → Environment Variables (Production **et** Preview) :
+
+| Key | Value |
+| --- | --- |
+| `SHOPIFY_STORE_DOMAIN` | ex. `ma-boutique.myshopify.com` (domaine technique) |
+| `SHOPIFY_CLIENT_ID` | le Client ID |
+| `SHOPIFY_CLIENT_SECRET` | le Client Secret |
+| `SHOPIFY_API_VERSION` | *(facultatif — défaut `2026-01`)* |
+
+Le domaine technique est visible dans l'URL de ton admin :
+`admin.shopify.com/store/ma-boutique` → `ma-boutique.myshopify.com`.
+
+> ℹ️ **Pas de token à copier** : l'application demande elle-même ses access
+> tokens à Shopify avec ces identifiants et les renouvelle automatiquement
+> (le grant « client credentials » fonctionne parce que l'app et la
+> boutique appartiennent à la même organisation).
+
+> **Ancienne application personnalisée ?** Si tu avais déjà créé une app
+> legacy dans l'admin de la boutique (token `shpat_`), elle reste supportée
+> via `SHOPIFY_ADMIN_ACCESS_TOKEN` + `SHOPIFY_WEBHOOK_SECRET` — mais c'est
+> un mode de compatibilité, à ne pas utiliser pour une nouvelle
+> installation.
+
+## 4. Protected customer data (obligatoire pour les commandes)
+
+Les webhooks et l'API commandes contiennent des **données clients
+protégées** (nom, e-mail, téléphone, adresse). Sans cette étape, Shopify
+**expurge** ces champs et TRUST AI recevrait des commandes sans client.
+
+1. Dev Dashboard → ton app → **API access** (ou Configuration → Data
+   access) → section **Protected customer data access** ;
+2. Clique **Request access** → sélectionne **Protected customer data**
+   (niveau commande) puis les champs **Name**, **Email**, **Phone**,
+   **Address** ;
+3. Motif à indiquer : gestion interne des commandes et livraisons de la
+   boutique par l'équipe Trust Industrie (usage interne, pas de revente de
+   données) ;
+4. Pour une app d'organisation installée sur ta propre boutique,
+   l'auto-déclaration suffit — pas de revue externe.
+
+## 5. Redéployer, puis créer les abonnements webhooks depuis TRUST AI
+
+1. Vercel → Deployments → **Redeploy** (les variables ne s'appliquent
+   qu'aux nouveaux builds) ;
+2. Connecte-toi à TRUST AI en administrateur → page **Mon compte** →
+   carte **« Intégration Shopify — abonnements webhooks »** ;
+3. **Vérifier les abonnements** → les 4 sujets requis s'affichent
+   (`ORDERS_CREATE`, `ORDERS_UPDATED`, `PRODUCTS_CREATE`,
+   `PRODUCTS_UPDATE`) avec leur état ;
+4. **Créer les abonnements manquants** → l'application les enregistre
+   auprès de Shopify via l'API Admin GraphQL, sans doublon, vers l'URL
+   publique de l'application.
+
+(L'autorisation est vérifiée côté serveur : seul un profil
+« administrateur » peut lister ou créer les abonnements, et rien n'est
+créé automatiquement au chargement d'une page.)
+
+## 6. Tester
+
+1. **Catalogue** : page Catalogue → « Synchroniser depuis Shopify » → ton
+   catalogue réel s'importe (produits « Shopify », date de synchronisation,
+   archivés Shopify → inactifs) ;
+2. **Commande** : passe une commande de test dans la boutique → elle
+   apparaît dans TRUST AI (onglet Shopify) avec client, articles, paiement
+   en ligne et source d'acquisition mesurée ;
+3. **Annulation** : annule la commande de test dans Shopify → elle passe
+   « Annulée » dans TRUST AI ; si elle est remboursée, l'encaissement en
+   ligne est retiré du suivi (journalisé), sans opération inventée.
 
 ## Dépannage
 
-* **Webhook refusé (401)** : le `SHOPIFY_WEBHOOK_SECRET` ne correspond pas —
-  recopie la clé de signature affichée sous la liste des webhooks (ce n'est
-  PAS le token `shpat_`), puis redéploie.
-* **Webhook refusé (503)** : une variable manque (`SHOPIFY_WEBHOOK_SECRET`
-  ou `SUPABASE_SECRET_KEY`) — vérifie l'orthographe exacte dans Vercel et
-  redéploie.
-* **Erreur 500 répétée** : consulte la table `shopify_webhook_events`
-  (SQL Editor : `select topic, status, error, received_at from
-  shopify_webhook_events order by received_at desc limit 20;`) — la
-  colonne `error` explique le problème. Shopify retente automatiquement
-  les livraisons échouées pendant 48 h.
-* **Synchronisation catalogue en erreur 502** : le token `shpat_` est
-  invalide ou les scopes `read_products` manquent — vérifie l'étape 3.
-* **Retour arrière** : supprime les 4 webhooks dans Shopify ; l'application
-  continue de fonctionner normalement sans eux.
+* **401 « Signature HMAC invalide »** : le `SHOPIFY_CLIENT_SECRET` ne
+  correspond pas à l'app qui a créé les webhooks (secret régénéré ? app
+  différente ?). Après rotation du secret, Shopify peut mettre jusqu'à une
+  heure à signer avec la nouvelle valeur.
+* **401 « Boutique émettrice inattendue »** : `SHOPIFY_STORE_DOMAIN` ne
+  correspond pas au domaine `*.myshopify.com` réel de la boutique.
+* **503** : une variable manque — vérifie l'orthographe exacte dans Vercel
+  et redéploie.
+* **Échec d'authentification (HTTP 4xx) lors de la synchronisation** :
+  Client ID/Secret erronés, ou l'app n'est pas **installée** sur la
+  boutique, ou app et boutique ne sont pas dans la même organisation.
+* **Commandes sans nom/e-mail client** : l'accès « Protected customer
+  data » n'a pas été déclaré (étape 4).
+* **Débogage fin** : table `shopify_webhook_events` (SQL Editor) :
+  `select topic, status, error, received_at from shopify_webhook_events
+  order by received_at desc limit 20;` — Shopify retente automatiquement
+  les livraisons en échec pendant 48 h ; les re-livraisons du même
+  événement sont ignorées (idempotence par webhook_id).
+* **Retour arrière** : supprime les abonnements webhooks (Dev Dashboard →
+  app → Webhooks, ou en vidant les variables et en redéployant) ;
+  l'application fonctionne normalement sans Shopify.
 
 ## Limites volontaires de cette phase
 
 * Shopify est en LECTURE seule (aucune écriture vers Shopify) ;
-* les remboursements Shopify ne sont pas encore traités (phase
-  remboursements/avoirs) ;
+* le traitement comptable des remboursements/avoirs magasin reste une
+  phase dédiée ;
+* volumétrie : l'import complet par pagination GraphQL convient jusqu'à
+  ~10 000 produits ; au-delà, prévoir les Bulk Operations (non nécessaire
+  pour Trust Industrie) ;
 * WhatsApp et OpenAI restent non connectés.

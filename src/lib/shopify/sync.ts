@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { MappedOrder, MappedProduct } from "./mapping";
+import { mapGraphQLProductNode, type MappedOrder, type MappedProduct } from "./mapping";
+import { shopifyGraphQL } from "./admin-api";
 
 /**
  * Écritures Shopify → Supabase (clé serveur), partagées entre la route
@@ -163,15 +164,46 @@ export async function upsertOrder(
     }
   }
 
-  // 4. Encaissement en ligne : une seule ligne de règlement « shopify » par
-  //    commande, mise à jour si le montant change (idempotent).
+  // 4. Annulation côté Shopify : la commande passe « Annulée » (l'historique
+  //    financier et le total restent intacts, règle V1.2). Le suivi déjà
+  //    saisi par l'équipe n'est pas modifié au-delà du statut d'annulation.
+  if (mapped.cancelled) {
+    const { data: current } = await supabase
+      .from("orders")
+      .select("status")
+      .eq("id", orderId)
+      .single();
+    if ((current as { status: string } | null)?.status !== "annulee") {
+      await supabase
+        .from("orders")
+        .update({ status: "annulee", delivery_status: "annulee" })
+        .eq("id", orderId);
+      await supabase
+        .from("order_lines")
+        .update({ procurement_status: "annule" })
+        .eq("order_id", orderId);
+      await supabase.from("activity_logs").insert({
+        organization_id: organizationId,
+        actor_label: "Webhook Shopify",
+        action: "Commande annulée côté Shopify",
+        details: `${mapped.order.reference} — annulation reçue de Shopify.`,
+        order_id: orderId,
+      });
+    }
+  }
+
+  // 5. Encaissement en ligne : UNE ligne de règlement « shopify » par
+  //    commande, miroir du NET encaissé selon Shopify (idempotent). Aucune
+  //    opération financière n'est inventée : si Shopify indique un
+  //    remboursement total (net = 0), le miroir est retiré et l'événement
+  //    est journalisé — jamais de faux règlement négatif.
+  const { data: existingPayment } = await supabase
+    .from("payments")
+    .select("id, amount_cents")
+    .eq("order_id", orderId)
+    .eq("method", "shopify")
+    .maybeSingle();
   if (mapped.paidCents > 0) {
-    const { data: existingPayment } = await supabase
-      .from("payments")
-      .select("id, amount_cents")
-      .eq("order_id", orderId)
-      .eq("method", "shopify")
-      .maybeSingle();
     if (existingPayment) {
       if ((existingPayment as { amount_cents: number }).amount_cents !== mapped.paidCents) {
         await supabase
@@ -190,9 +222,21 @@ export async function upsertOrder(
       });
       if (error) throw new Error(`payments: ${error.message}`);
     }
+  } else if (existingPayment) {
+    await supabase
+      .from("payments")
+      .delete()
+      .eq("id", (existingPayment as { id: string }).id);
+    await supabase.from("activity_logs").insert({
+      organization_id: organizationId,
+      actor_label: "Webhook Shopify",
+      action: "Remboursement Shopify",
+      details: `${mapped.order.reference} — Shopify indique un remboursement : l'encaissement en ligne a été retiré du suivi.`,
+      order_id: orderId,
+    });
   }
 
-  // 5. Parcours d'acquisition (source MESURÉE) — unique par commande.
+  // 6. Parcours d'acquisition (source MESURÉE) — unique par commande.
   if (mapped.journey.landing_page || mapped.journey.source) {
     await supabase.from("acquisition_journeys").upsert(
       {
@@ -210,7 +254,7 @@ export async function upsertOrder(
     );
   }
 
-  // 6. Historique.
+  // 7. Historique.
   await supabase.from("activity_logs").insert({
     organization_id: organizationId,
     actor_label: "Webhook Shopify",
@@ -304,3 +348,110 @@ export async function upsertProduct(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Synchronisation complète du catalogue (API Admin GraphQL)
+// ---------------------------------------------------------------------------
+
+const PRODUCTS_QUERY = `
+  query TrustAiProducts($cursor: String) {
+    products(first: 100, after: $cursor) {
+      pageInfo { hasNextPage endCursor }
+      edges {
+        node {
+          id
+          title
+          description
+          productType
+          handle
+          status
+          updatedAt
+          featuredImage { url }
+          variants(first: 100) {
+            edges {
+              node { id title sku barcode price }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const MAX_SYNC_PAGES = 100; // garde-fou : 10 000 produits par exécution
+
+export interface CatalogueSyncResult {
+  products: number;
+  variants: number;
+  deactivated: number;
+}
+
+/**
+ * Importe TOUT le catalogue Shopify (toutes les pages, toutes les
+ * variantes) via GraphQL avec pagination par curseur. Idempotent : les
+ * produits existants sont mis à jour, jamais dupliqués, et les données
+ * métier internes (associations fournisseurs, produits manuels) ne sont
+ * pas touchées. Les produits Shopify absents de la boutique (supprimés)
+ * sont DÉSACTIVÉS — jamais effacés.
+ *
+ * Volume TRUST Industrie (quelques centaines de produits) : la pagination
+ * par curseur tient largement dans les limites Vercel/Shopify. Au-delà de
+ * ~10 000 produits, passer aux Bulk Operations (documenté, non nécessaire).
+ */
+/**
+ * Récupère TOUTES les pages de produits (pagination par curseur) et les
+ * mappe — séparé de l'écriture pour être testé avec un fetch simulé.
+ */
+export async function fetchAllProductNodes(
+  fetchImpl: typeof fetch = fetch,
+): Promise<MappedProduct[]> {
+  const result: MappedProduct[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < MAX_SYNC_PAGES; page++) {
+    const data: any = await shopifyGraphQL(PRODUCTS_QUERY, { cursor }, fetchImpl);
+    const connection = data.products;
+    for (const edge of connection?.edges ?? []) {
+      result.push(mapGraphQLProductNode(edge.node));
+    }
+    if (!connection?.pageInfo?.hasNextPage) break;
+    cursor = connection.pageInfo.endCursor;
+  }
+  return result;
+}
+
+export async function syncAllProducts(
+  supabase: SupabaseClient,
+  organizationId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<CatalogueSyncResult> {
+  let products = 0;
+  let variants = 0;
+  const seenIds: string[] = [];
+
+  const allProducts = await fetchAllProductNodes(fetchImpl);
+  for (const mapped of allProducts) {
+    await upsertProduct(supabase, organizationId, mapped);
+    seenIds.push(mapped.product.shopify_product_id);
+    products += 1;
+    variants += mapped.variants.length;
+  }
+
+  // Archivage maîtrisé : produits Shopify connus en base mais absents de la
+  // boutique → désactivés (jamais supprimés, l'historique reste intact).
+  let deactivated = 0;
+  const { data: known } = await supabase
+    .from("products")
+    .select("id, shopify_product_id")
+    .eq("organization_id", organizationId)
+    .eq("source", "shopify")
+    .eq("active", true)
+    .not("shopify_product_id", "is", null);
+  const seen = new Set(seenIds);
+  for (const row of (known ?? []) as { id: string; shopify_product_id: string }[]) {
+    if (!seen.has(row.shopify_product_id)) {
+      await supabase.from("products").update({ active: false }).eq("id", row.id);
+      deactivated += 1;
+    }
+  }
+
+  return { products, variants, deactivated };
+}

@@ -3,8 +3,14 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import {
   mapOrderPayload,
   mapProductPayload,
+  verifyShopDomain,
   verifyShopifyHmac,
 } from "@/lib/shopify/mapping";
+import {
+  getShopifyStoreDomain,
+  getWebhookSigningSecrets,
+  isShopifyWebhookConfigured,
+} from "@/lib/shopify/config";
 import {
   getOrganizationId,
   upsertOrder,
@@ -12,21 +18,23 @@ import {
 } from "@/lib/shopify/sync";
 
 /**
- * Réception des webhooks Shopify.
+ * Réception des webhooks Shopify — conforme au parcours 2026
+ * (https://shopify.dev/docs/apps/build/webhooks/verify-deliveries) :
  *
- * Sécurité :
- *  1. la signature HMAC-SHA256 du corps brut est vérifiée avec
- *     SHOPIFY_WEBHOOK_SECRET — toute requête non signée est rejetée ;
- *  2. les écritures utilisent la clé serveur Supabase (jamais exposée au
- *     navigateur) ;
- *  3. chaque événement est journalisé dans shopify_webhook_events
- *     (traçabilité + débogage), et les upserts sont idempotents
- *     (shopify_order_id / shopify_line_id / shopify_product_id uniques) :
- *     rejouer un webhook ne crée jamais de doublon.
+ *  1. le CORPS BRUT est lu avant tout parsing JSON ;
+ *  2. la signature X-Shopify-Hmac-Sha256 est vérifiée en temps constant
+ *     avec le Client Secret de l'application (l'ancienne clé
+ *     « Notifications » reste acceptée en repli legacy) ;
+ *  3. X-Shopify-Shop-Domain doit correspondre exactement à
+ *     SHOPIFY_STORE_DOMAIN — on ne fait jamais confiance aux données
+ *     d'identité du payload ;
+ *  4. X-Shopify-Webhook-Id assure l'idempotence : une re-livraison du même
+ *     événement est acquittée (200) sans retraitement ;
+ *  5. les écritures utilisent la clé serveur Supabase, jamais exposée au
+ *     navigateur ; aucun secret n'apparaît dans les réponses ni les logs.
  *
- * Règle métier : un orders/updated met à jour les montants/quantités mais
- * ne touche JAMAIS au suivi d'approvisionnement saisi par l'équipe
- * (statut, fournisseur, dépôt de destination restent intacts).
+ * Règle métier : un orders/updated met à jour montants/quantités mais ne
+ * touche JAMAIS au suivi d'approvisionnement saisi par l'équipe.
  */
 
 export const runtime = "nodejs";
@@ -40,22 +48,37 @@ const SUPPORTED_TOPICS = new Set([
 ]);
 
 export async function POST(request: Request) {
-  const secret = process.env.SHOPIFY_WEBHOOK_SECRET;
-  if (!secret) {
-    // Intégration non configurée : on répond clairement, sans rien traiter.
+  if (!isShopifyWebhookConfigured()) {
     return NextResponse.json(
-      { error: "Webhook Shopify non configuré (SHOPIFY_WEBHOOK_SECRET absent)." },
+      {
+        error:
+          "Webhook Shopify non configuré : SHOPIFY_STORE_DOMAIN et SHOPIFY_CLIENT_SECRET sont requis (voir docs/SHOPIFY_SETUP.md).",
+      },
       { status: 503 },
     );
   }
 
+  // 1. Corps brut AVANT tout parsing.
   const rawBody = await request.text();
+
+  // 2. Signature HMAC (Client Secret, repli legacy accepté).
   const hmacHeader = request.headers.get("x-shopify-hmac-sha256");
-  if (!verifyShopifyHmac(rawBody, hmacHeader, secret)) {
+  if (!verifyShopifyHmac(rawBody, hmacHeader, getWebhookSigningSecrets())) {
     return NextResponse.json({ error: "Signature HMAC invalide." }, { status: 401 });
   }
 
+  // 3. La boutique émettrice doit être exactement la nôtre.
+  const shopDomain = request.headers.get("x-shopify-shop-domain");
+  if (!verifyShopDomain(shopDomain, getShopifyStoreDomain())) {
+    return NextResponse.json(
+      { error: "Boutique émettrice inattendue." },
+      { status: 401 },
+    );
+  }
+
   const topic = request.headers.get("x-shopify-topic") ?? "inconnu";
+  const webhookId = request.headers.get("x-shopify-webhook-id");
+
   const supabase = createSupabaseAdminClient();
   if (!supabase) {
     return NextResponse.json(
@@ -71,11 +94,24 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Corps JSON invalide." }, { status: 400 });
   }
 
+  // 4. Idempotence : re-livraison du même événement → acquittement direct.
+  if (webhookId) {
+    const { data: duplicate } = await supabase
+      .from("shopify_webhook_events")
+      .select("id, status")
+      .eq("webhook_id", webhookId)
+      .maybeSingle();
+    if (duplicate) {
+      return NextResponse.json({ ok: true, duplicate: true });
+    }
+  }
+
   // Journalisation de l'événement (traçabilité/débogage).
   const { data: eventRow } = await supabase
     .from("shopify_webhook_events")
     .insert({
       topic,
+      webhook_id: webhookId,
       shopify_id: payload.id !== undefined ? String(payload.id) : null,
       payload,
       status: SUPPORTED_TOPICS.has(topic) ? "recu" : "ignore",
