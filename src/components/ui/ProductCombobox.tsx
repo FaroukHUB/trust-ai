@@ -126,7 +126,14 @@ export function ProductCombobox({
   useEffect(() => {
     if (!open) return;
     const onClick = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+      const target = e.target as Node | null;
+      // Un élément déjà détaché du document vient forcément de l'INTÉRIEUR
+      // du composant : le passage produit → variantes remplace la ligne
+      // cliquée avant que l'événement n'atteigne document (rendu synchrone
+      // React sur les événements de saisie), et `contains` répondrait
+      // faussement « extérieur », refermant la liste.
+      if (!target || !target.isConnected) return;
+      if (rootRef.current && !rootRef.current.contains(target)) {
         setOpen(false);
       }
     };
