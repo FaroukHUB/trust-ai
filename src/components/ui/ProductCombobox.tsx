@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { ChevronsUpDown, Search } from "lucide-react";
+import { ArrowLeft, ChevronRight, ChevronsUpDown, Search } from "lucide-react";
 import { productCategoryLabels } from "@/lib/labels";
 import { formatEuro } from "@/lib/format";
 import type {
@@ -18,8 +18,7 @@ export interface ProductSelection {
   altSupplierId?: string;
 }
 
-interface Option {
-  product: Product;
+interface VariantOption {
   variant: ProductVariant;
   supplierName?: string;
   altNames: string[];
@@ -27,10 +26,20 @@ interface Option {
   altSupplierId?: string;
 }
 
+interface ProductOption {
+  product: Product;
+  variants: VariantOption[];
+  priceMin: number;
+  priceMax: number;
+}
+
 /**
- * Combobox accessible de sélection produit + variante depuis le catalogue.
- * Recherche par nom, SKU ou référence fournisseur, filtre par catégorie,
- * navigation clavier (flèches, Entrée, Échap).
+ * Combobox accessible de sélection produit + variante depuis le catalogue,
+ * en DEUX étapes : d'abord le produit (une ligne par produit, nombre de
+ * variantes et fourchette de prix), puis le choix explicite de la variante
+ * (couleur, dimensions…). Un produit à variante unique se sélectionne en un
+ * clic. Recherche par nom, variante, SKU ou référence fournisseur, filtre
+ * par catégorie, navigation clavier (flèches, Entrée, Échap, retour).
  */
 export function ProductCombobox({
   db,
@@ -45,44 +54,64 @@ export function ProductCombobox({
   const [category, setCategory] = useState<"all" | ProductCategory>("all");
   const [open, setOpen] = useState(false);
   const [highlighted, setHighlighted] = useState(0);
+  // Étape 2 : produit dont on choisit la variante (null = étape 1).
+  const [pickingFor, setPickingFor] = useState<ProductOption | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listboxId = useId();
 
-  const options = useMemo<Option[]>(() => {
+  const options = useMemo<ProductOption[]>(() => {
     const q = query.trim().toLowerCase();
-    const result: Option[] = [];
-    for (const variant of db.productVariants) {
-      const product = db.products.find((p) => p.id === variant.productId);
-      if (!product || !product.active) continue;
+    const result: ProductOption[] = [];
+    for (const product of db.products) {
+      if (!product.active) continue;
       if (category !== "all" && product.category !== category) continue;
-      const links = db.productSuppliers
-        .filter((ps) => ps.variantId === variant.id)
-        .sort((a, b) => a.priority - b.priority);
-      const primary = links.find((l) => l.isPrimary) ?? links[0];
-      const alts = links.filter((l) => l !== primary);
+      const variants = db.productVariants
+        .filter((v) => v.productId === product.id)
+        .sort((a, b) => a.name.localeCompare(b.name, "fr"));
+      if (variants.length === 0) continue;
+
+      const variantOptions: VariantOption[] = variants.map((variant) => {
+        const links = db.productSuppliers
+          .filter((ps) => ps.variantId === variant.id)
+          .sort((a, b) => a.priority - b.priority);
+        const primary = links.find((l) => l.isPrimary) ?? links[0];
+        const alts = links.filter((l) => l !== primary);
+        return {
+          variant,
+          supplierName: primary
+            ? db.suppliers.find((s) => s.id === primary.supplierId)?.name
+            : undefined,
+          altNames: alts
+            .map((l) => db.suppliers.find((s) => s.id === l.supplierId)?.name)
+            .filter((n): n is string => Boolean(n)),
+          primarySupplierId: primary?.supplierId,
+          altSupplierId: alts[0]?.supplierId,
+        };
+      });
+
       if (q) {
         const haystack = [
           product.title,
-          variant.name,
-          variant.sku,
-          ...links.map((l) => l.supplierReference ?? ""),
+          ...variantOptions.flatMap((o) => [
+            o.variant.name,
+            o.variant.sku,
+            ...db.productSuppliers
+              .filter((ps) => ps.variantId === o.variant.id)
+              .map((ps) => ps.supplierReference ?? ""),
+          ]),
         ]
           .join(" ")
           .toLowerCase();
         if (!haystack.includes(q)) continue;
       }
+
+      const prices = variantOptions.map((o) => o.variant.price);
       result.push({
         product,
-        variant,
-        supplierName: primary
-          ? db.suppliers.find((s) => s.id === primary.supplierId)?.name
-          : undefined,
-        altNames: alts
-          .map((l) => db.suppliers.find((s) => s.id === l.supplierId)?.name)
-          .filter((n): n is string => Boolean(n)),
-        primarySupplierId: primary?.supplierId,
-        altSupplierId: alts[0]?.supplierId,
+        variants: variantOptions,
+        priceMin: Math.min(...prices),
+        priceMax: Math.max(...prices),
       });
     }
     return result.slice(0, 30);
@@ -90,6 +119,7 @@ export function ProductCombobox({
 
   useEffect(() => {
     setHighlighted(0);
+    setPickingFor(null);
   }, [query, category, open]);
 
   // Fermeture au clic extérieur
@@ -104,16 +134,29 @@ export function ProductCombobox({
     return () => document.removeEventListener("mousedown", onClick);
   }, [open]);
 
-  const select = (option: Option) => {
+  const selectVariant = (product: Product, option: VariantOption) => {
     onSelect({
-      product: option.product,
+      product,
       variant: option.variant,
       primarySupplierId: option.primarySupplierId,
       altSupplierId: option.altSupplierId,
     });
     setQuery("");
+    setPickingFor(null);
     setOpen(false);
   };
+
+  const selectProduct = (option: ProductOption) => {
+    if (option.variants.length === 1) {
+      // Variante unique : pas de 2e étape inutile.
+      selectVariant(option.product, option.variants[0]);
+    } else {
+      setPickingFor(option);
+      setHighlighted(0);
+    }
+  };
+
+  const currentLength = pickingFor ? pickingFor.variants.length : options.length;
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (!open && (e.key === "ArrowDown" || e.key === "Enter")) {
@@ -123,15 +166,25 @@ export function ProductCombobox({
     if (!open) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setHighlighted((h) => Math.min(h + 1, options.length - 1));
+      setHighlighted((h) => Math.min(h + 1, currentLength - 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setHighlighted((h) => Math.max(h - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (options[highlighted]) select(options[highlighted]);
+      if (pickingFor) {
+        const option = pickingFor.variants[highlighted];
+        if (option) selectVariant(pickingFor.product, option);
+      } else if (options[highlighted]) {
+        selectProduct(options[highlighted]);
+      }
     } else if (e.key === "Escape") {
-      setOpen(false);
+      if (pickingFor) {
+        setPickingFor(null);
+        setHighlighted(0);
+      } else {
+        setOpen(false);
+      }
     }
   };
 
@@ -195,11 +248,69 @@ export function ProductCombobox({
         <ul
           id={listboxId}
           role="listbox"
-          aria-label="Produits du catalogue"
+          aria-label={
+            pickingFor
+              ? `Variantes de ${pickingFor.product.title}`
+              : "Produits du catalogue"
+          }
           className="absolute z-30 mt-1 max-h-80 w-full overflow-y-auto rounded-md border shadow-lg"
           style={{ borderColor: "var(--border)", background: "var(--surface)" }}
         >
-          {options.length === 0 ? (
+          {pickingFor ? (
+            <>
+              <li
+                role="presentation"
+                className="sticky top-0 border-b px-3 py-2"
+                style={{ borderColor: "var(--border)", background: "var(--surface)" }}
+              >
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 text-left text-sm font-medium"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    setPickingFor(null);
+                    setHighlighted(0);
+                  }}
+                >
+                  <ArrowLeft size={14} aria-hidden />
+                  {pickingFor.product.title}
+                  <span className="font-normal" style={{ color: "var(--muted)" }}>
+                    — choisissez la variante
+                  </span>
+                </button>
+              </li>
+              {pickingFor.variants.map((option, index) => (
+                <li
+                  key={option.variant.id}
+                  role="option"
+                  aria-selected={index === highlighted}
+                  className="cursor-pointer border-b px-3 py-2.5 last:border-b-0"
+                  style={{
+                    borderColor: "var(--border)",
+                    background: index === highlighted ? "var(--primary-soft)" : undefined,
+                  }}
+                  onMouseEnter={() => setHighlighted(index)}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    selectVariant(pickingFor.product, option);
+                  }}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-medium">{option.variant.name}</p>
+                    <p className="whitespace-nowrap text-sm font-semibold">
+                      {formatEuro(option.variant.price)}
+                    </p>
+                  </div>
+                  <p className="mt-0.5 text-xs" style={{ color: "var(--muted)" }}>
+                    SKU {option.variant.sku}
+                    {option.variant.dimensions ? ` · ${option.variant.dimensions}` : ""}
+                    {option.supplierName ? ` · Fournisseur : ${option.supplierName}` : ""}
+                    {option.altNames.length > 0 ? ` (alt. ${option.altNames.join(", ")})` : ""}
+                  </p>
+                </li>
+              ))}
+            </>
+          ) : options.length === 0 ? (
             <li className="px-3 py-3 text-sm" style={{ color: "var(--muted)" }} role="presentation">
               Aucun produit trouvé. Utilisez « Produit hors catalogue » pour une
               saisie libre.
@@ -207,7 +318,7 @@ export function ProductCombobox({
           ) : (
             options.map((option, index) => (
               <li
-                key={option.variant.id}
+                key={option.product.id}
                 role="option"
                 aria-selected={index === highlighted}
                 className="cursor-pointer border-b px-3 py-2.5 last:border-b-0"
@@ -218,22 +329,27 @@ export function ProductCombobox({
                 onMouseEnter={() => setHighlighted(index)}
                 onMouseDown={(e) => {
                   e.preventDefault();
-                  select(option);
+                  selectProduct(option);
                 }}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm font-medium">
-                    {option.product.title}
-                    <span style={{ color: "var(--muted)" }}> — {option.variant.name}</span>
-                  </p>
-                  <p className="whitespace-nowrap text-sm font-semibold">
-                    {formatEuro(option.variant.price)}
+                  <p className="text-sm font-medium">{option.product.title}</p>
+                  <p
+                    className="flex items-center gap-1 whitespace-nowrap text-sm font-semibold"
+                  >
+                    {option.priceMin === option.priceMax
+                      ? formatEuro(option.priceMin)
+                      : `${formatEuro(option.priceMin)} – ${formatEuro(option.priceMax)}`}
+                    {option.variants.length > 1 ? (
+                      <ChevronRight size={14} aria-hidden style={{ color: "var(--muted)" }} />
+                    ) : null}
                   </p>
                 </div>
                 <p className="mt-0.5 text-xs" style={{ color: "var(--muted)" }}>
-                  {productCategoryLabels[option.product.category]} · SKU {option.variant.sku}
-                  {option.supplierName ? ` · Fournisseur : ${option.supplierName}` : ""}
-                  {option.altNames.length > 0 ? ` (alt. ${option.altNames.join(", ")})` : ""}
+                  {productCategoryLabels[option.product.category]}
+                  {option.variants.length > 1
+                    ? ` · ${option.variants.length} variantes (couleur, dimensions…)`
+                    : ` · ${option.variants[0].variant.name} · SKU ${option.variants[0].variant.sku}`}
                 </p>
               </li>
             ))
