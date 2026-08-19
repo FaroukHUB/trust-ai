@@ -489,6 +489,371 @@ begin
   raise notice 'TEST 8 OK — tous les profils restent valides (9 rôles acceptés)';
 end $$;
 
+-- ===========================================================================
+-- TEST 9 — Montants : la DERNIÈRE correction gagne, pas la plus grande
+-- ---------------------------------------------------------------------------
+-- Cas piège demandé par l'audit : la correction la plus récente porte une
+-- valeur INFÉRIEURE à une correction antérieure. Un `max()` renverrait la
+-- mauvaise valeur.
+-- ===========================================================================
+insert into public.skara_documents (
+  id, organization_id, storage_path, file_name, file_hash, delivery_job_id)
+values ('a6000000-0000-4000-a000-000000000001',
+        '00000000-0000-4000-a000-000000000001',
+        'documents-skara/test.pdf', 'facture-test.pdf', 'hash-test-1',
+        'a3000000-0000-4000-a000-000000000001');
+
+insert into public.skara_document_extractions (
+  id, organization_id, document_id, amount_total_cents, amount_paid_cents,
+  amount_due_cents, amount_to_collect_cents)
+values ('a7000000-0000-4000-a000-000000000001',
+        '00000000-0000-4000-a000-000000000001',
+        'a6000000-0000-4000-a000-000000000001',
+        250000, 100000, 150000, 150000);
+
+-- Correction 1 (ANCIENNE) : valeur ÉLEVÉE. Correction 2 (RÉCENTE) : plus
+-- basse. La lecture doit retenir 180000, pas 990000.
+insert into public.skara_document_corrections (
+  organization_id, document_id, extraction_id, field_name,
+  raw_value, corrected_value, reason, corrected_by, corrected_at)
+values
+  ('00000000-0000-4000-a000-000000000001',
+   'a6000000-0000-4000-a000-000000000001', 'a7000000-0000-4000-a000-000000000001',
+   'amount_total_cents', '250000', '990000', 'Première lecture erronée',
+   'a1000000-0000-4000-a000-000000000002', '2026-08-18 10:00:00+00'),
+  ('00000000-0000-4000-a000-000000000001',
+   'a6000000-0000-4000-a000-000000000001', 'a7000000-0000-4000-a000-000000000001',
+   'amount_total_cents', '990000', '180000', 'Correction définitive après vérification',
+   'a1000000-0000-4000-a000-000000000002', '2026-08-19 09:00:00+00');
+
+set role authenticated;
+set local "request.jwt.claim.sub" = 'a1000000-0000-4000-a000-000000000002';
+do $$
+declare v jsonb; v_total integer;
+begin
+  v := public.get_delivery_job('a3000000-0000-4000-a000-000000000001');
+  v_total := (v->'montants'->>'amount_total_cents')::integer;
+  if v_total = 990000 then
+    raise exception 'ECHEC : la correction la PLUS GRANDE a été retenue (990000)';
+  end if;
+  if v_total <> 180000 then
+    raise exception 'ECHEC : montant recomposé % au lieu de 180000', v_total;
+  end if;
+  -- Les champs sans correction gardent la valeur brute de l'extraction.
+  if (v->'montants'->>'amount_paid_cents')::integer <> 100000 then
+    raise exception 'ECHEC : valeur brute non conservée pour un champ non corrigé';
+  end if;
+  raise notice 'TEST 9 OK — dernière correction retenue (180000), brut conservé ailleurs';
+end $$;
+
+-- Départage par id lorsque l'horodatage est identique : la lecture doit
+-- rester déterministe (aucune erreur, une seule valeur).
+reset role;
+insert into public.skara_document_corrections (
+  organization_id, document_id, extraction_id, field_name,
+  raw_value, corrected_value, reason, corrected_by, corrected_at)
+values
+  ('00000000-0000-4000-a000-000000000001',
+   'a6000000-0000-4000-a000-000000000001', 'a7000000-0000-4000-a000-000000000001',
+   'amount_due_cents', '150000', '111111', 'Ex aequo A',
+   'a1000000-0000-4000-a000-000000000002', '2026-08-19 12:00:00+00'),
+  ('00000000-0000-4000-a000-000000000001',
+   'a6000000-0000-4000-a000-000000000001', 'a7000000-0000-4000-a000-000000000001',
+   'amount_due_cents', '150000', '222222', 'Ex aequo B',
+   'a1000000-0000-4000-a000-000000000002', '2026-08-19 12:00:00+00');
+
+set role authenticated;
+set local "request.jwt.claim.sub" = 'a1000000-0000-4000-a000-000000000002';
+do $$
+declare v1 jsonb; v2 jsonb;
+begin
+  v1 := public.get_delivery_job('a3000000-0000-4000-a000-000000000001');
+  v2 := public.get_delivery_job('a3000000-0000-4000-a000-000000000001');
+  if v1->'montants'->>'amount_due_cents' is distinct from v2->'montants'->>'amount_due_cents' then
+    raise exception 'ECHEC : lecture non déterministe en cas d''ex aequo';
+  end if;
+  raise notice 'TEST 9b OK — départage déterministe en cas d''horodatage identique (%)',
+    v1->'montants'->>'amount_due_cents';
+end $$;
+reset role;
+
+-- ===========================================================================
+-- TEST 10 — Immuabilité RÉELLE, y compris pour les écritures privilégiées
+-- ---------------------------------------------------------------------------
+-- Les phases 2-3 écriront avec la clé serveur (rôle `service_role`), qui
+-- contourne la RLS. Les déclencheurs, eux, s'appliquent à tous les rôles.
+-- ===========================================================================
+do $$
+begin
+  -- Extraction : ni update, ni delete (rôle courant = superutilisateur).
+  begin
+    update public.skara_document_extractions set amount_total_cents = 1
+    where id = 'a7000000-0000-4000-a000-000000000001';
+    raise exception 'ECHEC : extraction modifiable';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    delete from public.skara_document_extractions
+    where id = 'a7000000-0000-4000-a000-000000000001';
+    raise exception 'ECHEC : extraction supprimable';
+  exception when insufficient_privilege then null;
+  end;
+
+  -- Corrections : append-only.
+  begin
+    update public.skara_document_corrections set corrected_value = '1'
+    where extraction_id = 'a7000000-0000-4000-a000-000000000001';
+    raise exception 'ECHEC : correction modifiable';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    delete from public.skara_document_corrections
+    where extraction_id = 'a7000000-0000-4000-a000-000000000001';
+    raise exception 'ECHEC : correction supprimable';
+  exception when insufficient_privilege then null;
+  end;
+
+  -- Journal des accès sensibles : append-only.
+  begin
+    update public.sensitive_access_logs set action = 'consultation_montants';
+    raise exception 'ECHEC : journal d''accès modifiable';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    delete from public.sensitive_access_logs;
+    raise exception 'ECHEC : journal d''accès supprimable';
+  exception when insufficient_privilege then null;
+  end;
+
+  raise notice 'TEST 10 OK — extractions immuables, corrections et journal en ajout seul';
+end $$;
+
+-- Même refus sous le rôle service_role (celui de la clé serveur).
+set role service_role;
+do $$
+begin
+  begin
+    update public.skara_document_extractions set amount_total_cents = 42
+    where id = 'a7000000-0000-4000-a000-000000000001';
+    raise exception 'ECHEC : service_role a modifié une extraction';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    delete from public.skara_document_corrections
+    where extraction_id = 'a7000000-0000-4000-a000-000000000001';
+    raise exception 'ECHEC : service_role a supprimé une correction';
+  exception when insufficient_privilege then null;
+  end;
+  raise notice 'TEST 10b OK — la clé serveur (service_role) ne peut ni modifier ni supprimer';
+end $$;
+reset role;
+
+-- Une suppression du document parent ne contourne pas la protection.
+do $$
+begin
+  delete from public.skara_documents where id = 'a6000000-0000-4000-a000-000000000001';
+  raise exception 'ECHEC : suppression du document acceptée malgré ses extractions';
+exception
+  when foreign_key_violation then
+    raise notice 'TEST 10c OK — document non supprimable tant qu''il porte des extractions';
+end $$;
+
+-- ===========================================================================
+-- TEST 11 — Motif de correction : ni nul, ni vide, ni espaces
+-- ===========================================================================
+do $$
+begin
+  begin
+    insert into public.skara_document_corrections (
+      organization_id, document_id, extraction_id, field_name,
+      corrected_value, reason, corrected_by)
+    values ('00000000-0000-4000-a000-000000000001',
+            'a6000000-0000-4000-a000-000000000001',
+            'a7000000-0000-4000-a000-000000000001',
+            'customer_name', 'X', '   ', 'a1000000-0000-4000-a000-000000000002');
+    raise exception 'ECHEC : motif composé d''espaces accepté';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.skara_document_corrections (
+      organization_id, document_id, extraction_id, field_name,
+      corrected_value, reason, corrected_by)
+    values ('00000000-0000-4000-a000-000000000001',
+            'a6000000-0000-4000-a000-000000000001',
+            'a7000000-0000-4000-a000-000000000001',
+            'customer_name', 'X', '', 'a1000000-0000-4000-a000-000000000002');
+    raise exception 'ECHEC : motif vide accepté';
+  exception when check_violation then null;
+  end;
+  raise notice 'TEST 11 OK — motif de correction obligatoire et non vide';
+end $$;
+
+-- ===========================================================================
+-- TEST 12 — Références interorganisation refusées, même avec la clé serveur
+-- ===========================================================================
+do $$
+begin
+  -- Dossier de A pointant vers un magasin… inexistant côté A car appartenant
+  -- à B : ici on teste avec une ligne logistique et un dossier croisés.
+  begin
+    insert into public.delivery_allocations (
+      organization_id, logistics_line_id, delivery_job_id, quantity_allocated)
+    values ('00000000-0000-4000-a000-000000000001',
+            'b2000000-0000-4000-b000-000000000001',   -- ligne de B
+            'a3000000-0000-4000-a000-000000000001',   -- dossier de A
+            1);
+    raise exception 'ECHEC : affectation croisée A/B insérée directement';
+  exception when insufficient_privilege then null;
+  end;
+
+  -- Anomalie de A rattachée à un dossier de B.
+  begin
+    insert into public.logistics_anomalies (
+      organization_id, delivery_job_id, type, message)
+    values ('00000000-0000-4000-a000-000000000001',
+            'b3000000-0000-4000-b000-000000000001', 'test', 'croisée');
+    raise exception 'ECHEC : anomalie croisée insérée';
+  exception when insufficient_privilege then null;
+  end;
+
+  -- Document de B rattaché à un dossier de A.
+  begin
+    insert into public.skara_documents (
+      organization_id, storage_path, file_name, file_hash, delivery_job_id)
+    values ('b0000000-0000-4000-b000-000000000001',
+            'x', 'x.pdf', 'hash-croise', 'a3000000-0000-4000-a000-000000000001');
+    raise exception 'ECHEC : document croisé inséré';
+  exception when insufficient_privilege then null;
+  end;
+
+  -- Ligne de A référençant une variante de B.
+  begin
+    insert into public.logistics_lines (
+      organization_id, origin, origin_reason, designation, quantity, variant_id)
+    values ('00000000-0000-4000-a000-000000000001', 'stock_local', 'test',
+            'Article', 1, 'b5000000-0000-4000-b000-000000000001');
+    raise exception 'ECHEC : ligne référençant une variante d''une autre organisation';
+  exception when insufficient_privilege then null;
+  end;
+
+  -- Journal d'accès de A attribué à un profil de B.
+  begin
+    insert into public.sensitive_access_logs (
+      organization_id, profile_id, action, object_type)
+    values ('00000000-0000-4000-a000-000000000001',
+            'b1000000-0000-4000-b000-000000000001',
+            'consultation_montants', 'delivery_job');
+    raise exception 'ECHEC : journal attribué à un profil d''une autre organisation';
+  exception when insufficient_privilege then null;
+  end;
+
+  raise notice 'TEST 12 OK — aucune référence interorganisation acceptée (écriture privilégiée)';
+end $$;
+
+-- Même refus sous service_role (chemin d'ingestion des phases 2-3).
+set role service_role;
+do $$
+begin
+  begin
+    insert into public.logistics_line_events (
+      organization_id, logistics_line_id, event_type, occurred_on)
+    values ('00000000-0000-4000-a000-000000000001',
+            'b2000000-0000-4000-b000-000000000001',   -- ligne de B
+            'reception_argenteuil', current_date);
+    raise exception 'ECHEC : service_role a inséré un événement croisé';
+  exception when insufficient_privilege then null;
+  end;
+  raise notice 'TEST 12b OK — la clé serveur ne peut pas franchir la frontière d''organisation';
+end $$;
+reset role;
+
+-- Le cas légitime (même organisation) reste évidemment accepté.
+do $$
+begin
+  insert into public.logistics_line_events (
+    organization_id, logistics_line_id, event_type, occurred_on)
+  values ('00000000-0000-4000-a000-000000000001',
+          'a2000000-0000-4000-a000-000000000001',
+          'reception_argenteuil', current_date);
+  raise notice 'TEST 12c OK — référence intra-organisation acceptée normalement';
+end $$;
+
+-- ===========================================================================
+-- TEST 13 — Référentiel logistique : effacement volontaire et décimaux
+-- ===========================================================================
+set role authenticated;
+set local "request.jwt.claim.sub" = 'a1000000-0000-4000-a000-000000000002';
+do $$
+declare v_variant uuid;
+begin
+  select v.id into v_variant
+  from public.product_variants v
+  join public.products p on p.id = v.product_id
+  where p.organization_id = '00000000-0000-4000-a000-000000000001'
+  limit 1;
+
+  -- Renseigner, puis EFFACER volontairement (null explicite).
+  perform public.set_variant_logistics(v_variant,
+    jsonb_build_object('weight_grams', 45000, 'package_count', 3));
+  if (select weight_grams from public.product_variants where id = v_variant) <> 45000 then
+    raise exception 'ECHEC : valeur non enregistrée';
+  end if;
+
+  perform public.set_variant_logistics(v_variant, '{"weight_grams": null}'::jsonb);
+  if (select weight_grams from public.product_variants where id = v_variant) is not null then
+    raise exception 'ECHEC : effacement volontaire ignoré (coalesce conserve l''ancienne valeur)';
+  end if;
+  -- Une clé ABSENTE ne doit pas effacer les autres champs.
+  if (select package_count from public.product_variants where id = v_variant) <> 3 then
+    raise exception 'ECHEC : un champ absent du payload a été effacé';
+  end if;
+
+  -- Décimaux refusés, sans arrondi silencieux.
+  begin
+    perform public.set_variant_logistics(v_variant, '{"weight_grams": 45.7}'::jsonb);
+    raise exception 'ECHEC : poids décimal accepté';
+  exception when raise_exception then null;
+  end;
+  begin
+    perform public.set_variant_logistics(v_variant, '{"recommended_handlers": 2.5}'::jsonb);
+    raise exception 'ECHEC : nombre de livreurs décimal accepté';
+  exception when raise_exception then null;
+  end;
+  -- Le refus ne laisse aucune trace.
+  if (select weight_grams from public.product_variants where id = v_variant) is not null then
+    raise exception 'ECHEC : une valeur refusée a tout de même été écrite';
+  end if;
+
+  -- Vider une dimension efface le volume dérivé.
+  perform public.set_variant_logistics(v_variant, jsonb_build_object(
+    'packed_length_mm', 2000, 'packed_width_mm', 1000, 'packed_height_mm', 500));
+  if (select volume_cm3 from public.product_variants where id = v_variant) is null then
+    raise exception 'ECHEC : volume non calculé';
+  end if;
+  perform public.set_variant_logistics(v_variant, '{"packed_height_mm": null}'::jsonb);
+  if (select volume_cm3 from public.product_variants where id = v_variant) is not null then
+    raise exception 'ECHEC : volume conservé alors qu''une dimension a été effacée';
+  end if;
+
+  raise notice 'TEST 13 OK — effacement volontaire, décimaux refusés, volume cohérent';
+end $$;
+reset role;
+
+-- ===========================================================================
+-- TEST 14 — La création de commande magasin n'est plus exécutable
+-- ===========================================================================
+set role authenticated;
+set local "request.jwt.claim.sub" = 'a1000000-0000-4000-a000-000000000001'; -- admin
+do $$
+begin
+  perform public.create_store_order('{}'::jsonb);
+  raise exception 'ECHEC : création de commande magasin encore possible';
+exception
+  when insufficient_privilege then
+    raise notice 'TEST 14 OK — create_store_order non exécutable (Skara crée les commandes)';
+end $$;
+reset role;
+
 rollback;
 
 \echo 'TOUS LES TESTS PHASE 1 SONT PASSES (transaction annulée, base intacte).'

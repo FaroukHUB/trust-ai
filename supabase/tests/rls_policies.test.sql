@@ -88,67 +88,59 @@ end $$;
 reset role;
 
 -- ---------------------------------------------------------------------------
--- 2. Vendeuse Herblay : limitée à son magasin, identité serveur
+-- 2. Vendeuse Herblay : limitée à son magasin, règles financières V1.2
 -- ---------------------------------------------------------------------------
+-- NOTE (phase 1) : depuis le recentrage logistique, Skara est la SOURCE DE
+-- CRÉATION des commandes et `create_store_order` n'est plus exécutable
+-- depuis l'application. Les assertions qui portaient sur le comportement de
+-- cette fonction (magasin non autorisé refusé, identité prise dans la
+-- session, hors catalogue réservé) ne sont donc plus vérifiables ici : elles
+-- sont remplacées par la vérification que la fonction est bien refusée.
+-- Les règles encore en vigueur (visibilité par magasin, règlements, rôle non
+-- modifiable, validation interdite) restent testées ci-dessous, sur une
+-- commande insérée hors session.
+insert into public.customers (id, organization_id, name, phone)
+values ('20000000-0000-4000-a000-000000000010',
+        '00000000-0000-4000-a000-000000000001', 'Client Herblay Test', '06 00 00 00 91');
+insert into public.orders (
+  id, organization_id, reference, origin, store_id, salesperson_profile_id,
+  customer_id, ordered_at, fulfillment_mode)
+values ('20000000-0000-4000-a000-000000000011',
+        '00000000-0000-4000-a000-000000000001', 'MAG-HER-2026-0001', 'MAGASIN',
+        '00000000-0000-4000-a000-000000000202',
+        '10000000-0000-4000-a000-000000000001',
+        '20000000-0000-4000-a000-000000000010', now(), 'retrait_magasin');
+insert into public.order_lines (
+  organization_id, order_id, product_name, quantity, unit_price_cents)
+values ('00000000-0000-4000-a000-000000000001',
+        '20000000-0000-4000-a000-000000000011', 'Chaise Vera', 2, 12900);
+insert into public.payments (
+  organization_id, order_id, amount_cents, method, store_id)
+values ('00000000-0000-4000-a000-000000000001',
+        '20000000-0000-4000-a000-000000000011', 5000, 'especes',
+        '00000000-0000-4000-a000-000000000202');
+
 set role authenticated;
 select set_config('request.jwt.claim.sub', '10000000-0000-4000-a000-000000000001', false);
 
 do $$
 declare
-  v_order uuid;
-  v_ref text;
-  v_sales uuid;
+  v_order uuid := '20000000-0000-4000-a000-000000000011';
 begin
   -- Ne voit PAS la commande de Lisses (magasin non autorisé).
   if (select count(*) from public.orders where reference = 'MAG-LIS-2026-0001') <> 0 then
     raise exception 'La vendeuse d''Herblay ne doit pas voir les commandes de Lisses';
   end if;
 
-  -- Ne peut PAS créer une commande sur Lisses.
-  begin
-    perform public.create_store_order(jsonb_build_object(
-      'store_id', '00000000-0000-4000-a000-000000000201',
-      'fulfillment_mode', 'retrait_magasin',
-      'customer', jsonb_build_object('name', 'X', 'phone', '06'),
-      'lines', jsonb_build_array(jsonb_build_object(
-        'product_name', 'Test', 'quantity', 1, 'unit_price_cents', 1000)),
-      'payments', '[]'::jsonb
-    ));
-    raise exception 'Création sur un magasin non autorisé acceptée à tort';
-  exception when insufficient_privilege then null;
-  end;
-
-  -- Peut créer sur SON magasin ; l''identité vient de la session.
-  v_order := public.create_store_order(jsonb_build_object(
-    'store_id', '00000000-0000-4000-a000-000000000202',
-    'fulfillment_mode', 'retrait_magasin',
-    'customer', jsonb_build_object('name', 'Client Herblay Test', 'phone', '06 00 00 00 91'),
-    'lines', jsonb_build_array(jsonb_build_object(
-      'product_name', 'Chaise Vera', 'quantity', 2, 'unit_price_cents', 12900)),
-    'payments', jsonb_build_array(jsonb_build_object(
-      'amount_cents', 5000, 'method', 'especes'))
-  ));
-  select reference, salesperson_profile_id into v_ref, v_sales
-  from public.orders where id = v_order;
-  if v_ref !~ '^MAG-HER-\d{4}-\d{4}$' then
-    raise exception 'Référence inattendue : %', v_ref;
-  end if;
-  if v_sales <> '10000000-0000-4000-a000-000000000001' then
-    raise exception 'L''identité de la vendeuse doit venir de la session, pas du formulaire';
+  -- Voit BIEN la commande de son propre magasin.
+  if (select count(*) from public.orders where id = v_order) <> 1 then
+    raise exception 'La vendeuse doit voir les commandes de son magasin';
   end if;
 
-  -- Hors catalogue interdit au rôle vendeur.
+  -- La création de commande magasin n'est plus exécutable (Skara fait foi).
   begin
-    perform public.create_store_order(jsonb_build_object(
-      'store_id', '00000000-0000-4000-a000-000000000202',
-      'fulfillment_mode', 'retrait_magasin',
-      'customer', jsonb_build_object('name', 'Y', 'phone', '06'),
-      'lines', jsonb_build_array(jsonb_build_object(
-        'product_name', 'Libre', 'quantity', 1, 'unit_price_cents', 1000,
-        'off_catalog', true)),
-      'payments', '[]'::jsonb
-    ));
-    raise exception 'Hors catalogue accepté à tort pour un vendeur';
+    perform public.create_store_order('{}'::jsonb);
+    raise exception 'create_store_order devrait être révoquée depuis la phase 1';
   exception when insufficient_privilege then null;
   end;
 
@@ -182,7 +174,7 @@ begin
   exception when insufficient_privilege then null;
   end;
 
-  raise notice 'TEST 2 OK — vendeur limité à son magasin, identité serveur, règles V1.2';
+  raise notice 'TEST 2 OK — vendeur limité à son magasin, création révoquée, règles V1.2';
 end $$;
 
 -- ---------------------------------------------------------------------------

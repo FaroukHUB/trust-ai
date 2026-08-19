@@ -254,22 +254,29 @@ export interface LogisticsSummary {
   documentsAVerifier: number;
 }
 
-/** Caractéristiques logistiques d'une variante (toutes facultatives). */
+/**
+ * Caractéristiques logistiques d'une variante (toutes facultatives).
+ *
+ * Convention de mise à jour, identique côté serveur :
+ *   * champ ABSENT → valeur conservée ;
+ *   * champ à `null` → valeur EFFACÉE (vidage volontaire) ;
+ *   * champ renseigné → validé (entiers uniquement, jamais arrondis).
+ */
 export interface VariantLogistics {
   /** Poids de l'article emballé, en grammes. */
-  weightGrams?: number;
+  weightGrams?: number | null;
   /** Dimensions EMBALLÉES, en millimètres. */
-  packedLengthMm?: number;
-  packedWidthMm?: number;
-  packedHeightMm?: number;
+  packedLengthMm?: number | null;
+  packedWidthMm?: number | null;
+  packedHeightMm?: number | null;
   /** Volume en cm³ (calculé côté serveur si les 3 dimensions sont fournies). */
-  volumeCm3?: number;
-  packageCount?: number;
-  fragile?: boolean;
-  requiresInstallation?: boolean;
+  volumeCm3?: number | null;
+  packageCount?: number | null;
+  fragile?: boolean | null;
+  requiresInstallation?: boolean | null;
   /** Nombre de livreurs conseillé (1 à 4). */
-  recommendedHandlers?: number;
-  handlingNotes?: string;
+  recommendedHandlers?: number | null;
+  handlingNotes?: string | null;
   verifiedAt?: string;
   verifiedBy?: string;
 }

@@ -683,4 +683,39 @@ describe("Référentiel logistique (setVariantLogisticsM)", () => {
       BusinessError,
     );
   });
+
+  it("efface une caractéristique avec null, conserve les champs non transmis", () => {
+    const variant = db.productVariants[0];
+    setVariantLogisticsM(db, variant.id, { weightGrams: 45000, packageCount: 3 });
+    expect(variant.logistics?.weightGrams).toBe(45000);
+
+    // null = effacement volontaire ; les autres champs restent intacts.
+    setVariantLogisticsM(db, variant.id, { weightGrams: null });
+    expect(variant.logistics?.weightGrams).toBeUndefined();
+    expect(variant.logistics?.packageCount).toBe(3);
+  });
+
+  it("refuse les nombres décimaux au lieu de les arrondir", () => {
+    const variant = db.productVariants[0];
+    expect(() => setVariantLogisticsM(db, variant.id, { weightGrams: 45.7 })).toThrow(
+      /entier attendu/,
+    );
+    expect(() =>
+      setVariantLogisticsM(db, variant.id, { recommendedHandlers: 2.5 }),
+    ).toThrow(/entier attendu/);
+    // Aucun enregistrement partiel après un refus.
+    expect(variant.logistics).toBeUndefined();
+  });
+
+  it("efface le volume dérivé quand une dimension est vidée", () => {
+    const variant = db.productVariants[0];
+    setVariantLogisticsM(db, variant.id, {
+      packedLengthMm: 2000,
+      packedWidthMm: 1000,
+      packedHeightMm: 500,
+    });
+    expect(variant.logistics?.volumeCm3).toBe((2000 * 1000 * 500) / 1000);
+    setVariantLogisticsM(db, variant.id, { packedHeightMm: null });
+    expect(variant.logistics?.volumeCm3).toBeUndefined();
+  });
 });

@@ -47,7 +47,9 @@
 
 begin;
 
--- 1. Fonctions RPC de la phase 1.
+-- 1. Fonctions RPC et utilitaires de la phase 1.
+--    (Les déclencheurs d'immuabilité et de cohérence disparaissent avec les
+--    tables ; les fonctions qu'ils utilisent sont retirées ensuite.)
 drop function if exists public.get_delivery_job(uuid);
 drop function if exists public.allocate_to_delivery_job(uuid, uuid, integer);
 drop function if exists public.set_variant_logistics(uuid, jsonb);
@@ -100,10 +102,18 @@ alter table public.warehouses
   drop column if exists longitude,
   drop column if exists opening_notes;
 
--- 4. Droit d'écriture du catalogue rétabli tel qu'il était avant la phase 1.
-grant update on public.product_variants to authenticated;
+-- 4. Fonctions utilitaires devenues inutiles (les tables ont disparu).
+drop function if exists app.last_correction_int(uuid, text);
+drop function if exists app.payload_int(jsonb, text, integer, integer, text);
+drop function if exists app.assert_same_org();
+drop function if exists app.org_of(text, uuid);
+drop function if exists app.forbid_update_delete();
 
--- 5. Contrainte de rôles ramenée aux 7 rôles d'origine.
+-- 5. Droits rétablis tels qu'ils étaient avant la phase 1.
+grant update on public.product_variants to authenticated;
+grant execute on function public.create_store_order(jsonb) to authenticated;
+
+-- 6. Contrainte de rôles ramenée aux 7 rôles d'origine.
 --    ⚠️ Échoue volontairement si un profil porte déjà un des deux nouveaux
 --    rôles : dans ce cas, réattribuer d'abord ces profils à un rôle existant.
 alter table public.profiles drop constraint if exists profiles_role_check;
@@ -113,7 +123,7 @@ alter table public.profiles
     'direction','administrateur'
   ));
 
--- 6. Matrice de permissions d'origine (11 permissions, 7 rôles).
+-- 7. Matrice de permissions d'origine (11 permissions, 7 rôles).
 create or replace function app.role_permissions(p_role text)
 returns text[]
 language sql

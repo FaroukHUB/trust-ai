@@ -634,34 +634,52 @@ export function setVariantLogisticsM(
   const variant = db.productVariants.find((v) => v.id === variantId);
   if (!variant) throw new BusinessError("Variante introuvable.");
 
+  // `null` = effacement volontaire ; `undefined` = champ non transmis, donc
+  // valeur conservée. Un nombre décimal est REFUSÉ, jamais arrondi.
   const check = (
-    value: number | undefined,
+    value: number | null | undefined,
     min: number,
     max: number,
-    message: string,
+    label: string,
   ) => {
-    if (value !== undefined && (!Number.isFinite(value) || value < min || value > max)) {
-      throw new BusinessError(message);
+    if (value === undefined || value === null) return;
+    if (!Number.isFinite(value)) {
+      throw new BusinessError(`${label} : valeur numérique attendue.`);
+    }
+    if (!Number.isInteger(value)) {
+      throw new BusinessError(
+        `${label} : nombre entier attendu (aucun arrondi automatique).`,
+      );
+    }
+    if (value < min || value > max) {
+      throw new BusinessError(
+        `${label} : valeur hors limites (attendu entre ${min} et ${max}).`,
+      );
     }
   };
-  check(logistics.weightGrams, 1, 2_000_000,
-    "Poids invalide : indiquez une valeur en grammes entre 1 et 2 000 000.");
-  check(logistics.packedLengthMm, 1, 10_000,
-    "Dimension invalide : indiquez des millimètres entre 1 et 10 000.");
-  check(logistics.packedWidthMm, 1, 10_000,
-    "Dimension invalide : indiquez des millimètres entre 1 et 10 000.");
-  check(logistics.packedHeightMm, 1, 10_000,
-    "Dimension invalide : indiquez des millimètres entre 1 et 10 000.");
-  check(logistics.packageCount, 1, 50, "Nombre de colis invalide : entre 1 et 50.");
-  check(logistics.recommendedHandlers, 1, 4,
-    "Nombre de livreurs conseillé invalide : entre 1 et 4.");
+  check(logistics.weightGrams, 1, 2_000_000, "Poids (g)");
+  check(logistics.packedLengthMm, 1, 10_000, "Longueur emballée (mm)");
+  check(logistics.packedWidthMm, 1, 10_000, "Largeur emballée (mm)");
+  check(logistics.packedHeightMm, 1, 10_000, "Hauteur emballée (mm)");
+  check(logistics.packageCount, 1, 50, "Nombre de colis");
+  check(logistics.recommendedHandlers, 1, 4, "Livreurs conseillés");
+  check(logistics.volumeCm3, 1, 100_000_000, "Volume (cm³)");
 
-  const merged: VariantLogistics = { ...(variant.logistics ?? {}), ...logistics };
-  // Volume calculé dès que les trois dimensions emballées sont connues.
-  if (merged.packedLengthMm && merged.packedWidthMm && merged.packedHeightMm) {
-    merged.volumeCm3 = Math.floor(
-      (merged.packedLengthMm * merged.packedWidthMm * merged.packedHeightMm) / 1000,
-    );
+  // Fusion : seules les clés RÉELLEMENT transmises sont appliquées.
+  const merged: VariantLogistics = { ...(variant.logistics ?? {}) };
+  for (const [key, value] of Object.entries(logistics)) {
+    if (value === undefined) continue;
+    (merged as Record<string, unknown>)[key] = value === null ? undefined : value;
+  }
+  // Volume dérivé des dimensions FINALES : recalculé quand les trois sont
+  // connues, effacé si l'une d'elles a été vidée (sauf volume explicite).
+  if (logistics.volumeCm3 === undefined) {
+    merged.volumeCm3 =
+      merged.packedLengthMm && merged.packedWidthMm && merged.packedHeightMm
+        ? Math.floor(
+            (merged.packedLengthMm * merged.packedWidthMm * merged.packedHeightMm) / 1000,
+          )
+        : undefined;
   }
   merged.verifiedAt = new Date().toISOString();
   variant.logistics = merged;

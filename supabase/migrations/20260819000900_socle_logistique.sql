@@ -284,7 +284,9 @@ create table if not exists public.skara_documents (
 create table if not exists public.skara_document_extractions (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id),
-  document_id uuid not null references public.skara_documents(id) on delete cascade,
+  -- `restrict` : une extraction ne peut pas être effacée, même par cascade
+  -- (immuabilité garantie par déclencheur, §10 bis).
+  document_id uuid not null references public.skara_documents(id) on delete restrict,
   method text not null default 'gabarit' check (method in ('gabarit')),
   template_version text,
   extracted_at timestamptz not null default now(),
@@ -318,13 +320,18 @@ create index if not exists skara_extractions_document_idx
 create table if not exists public.skara_document_corrections (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id),
-  document_id uuid not null references public.skara_documents(id) on delete cascade,
+  -- `restrict` et non `cascade` : ces lignes sont protégées contre toute
+  -- suppression (§10 bis). Une cascade échouerait de toute façon sur le
+  -- déclencheur d'immuabilité ; `restrict` donne un message clair.
+  document_id uuid not null references public.skara_documents(id) on delete restrict,
   extraction_id uuid not null
-    references public.skara_document_extractions(id) on delete cascade,
+    references public.skara_document_extractions(id) on delete restrict,
   field_name text not null,
   raw_value text,
   corrected_value text,
-  reason text not null,                 -- motif OBLIGATOIRE
+  -- Motif OBLIGATOIRE : ni nul, ni vide, ni composé d'espaces.
+  reason text not null constraint skara_corrections_reason_check
+    check (btrim(reason) <> ''),
   corrected_by uuid not null references public.profiles(id),
   corrected_at timestamptz not null default now()
 );
@@ -595,6 +602,219 @@ end $$;
 revoke update on public.product_variants from authenticated;
 revoke update on public.product_variants from anon;
 
+-- Skara reste la source de création des commandes : la fonction de création
+-- de commande magasin n'est plus exécutable depuis l'application. Le code et
+-- les données existantes sont conservés (le retour arrière la rétablit).
+revoke execute on function public.create_store_order(jsonb) from authenticated;
+revoke execute on function public.create_store_order(jsonb) from anon;
+revoke execute on function public.create_store_order(jsonb) from public;
+
+-- ===========================================================================
+-- 10 bis. IMMUABILITÉ RÉELLE (résiste à la clé serveur)
+-- ---------------------------------------------------------------------------
+-- Révoquer les droits d'`anon` et `authenticated` ne suffit pas : les
+-- écritures d'ingestion (phases 2-3) utiliseront la clé serveur, dont le rôle
+-- `service_role` contourne la RLS et possède ses propres droits. Un
+-- DÉCLENCHEUR, lui, s'applique à TOUTE écriture quel que soit le rôle —
+-- y compris service_role et le propriétaire des tables.
+--
+--   * skara_document_extractions : IMMUABLE (ni update, ni delete) — une
+--     nouvelle lecture crée une nouvelle extraction, elle n'écrase jamais
+--     la valeur brute d'origine ;
+--   * skara_document_corrections : APPEND-ONLY — une correction erronée se
+--     corrige par une nouvelle correction, l'historique reste complet ;
+--   * sensitive_access_logs     : APPEND-ONLY — un journal d'accès qui peut
+--     être réécrit ne prouve rien.
+-- ===========================================================================
+
+create or replace function app.forbid_update_delete()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  raise exception
+    'Table % : écriture en ajout seul — % interdit (donnée probante conservée telle quelle).',
+    tg_table_name, tg_op
+    using errcode = '42501';
+end;
+$$;
+
+do $$
+declare
+  t text;
+begin
+  foreach t in array array[
+    'skara_document_extractions',
+    'skara_document_corrections',
+    'sensitive_access_logs'
+  ]
+  loop
+    execute format('drop trigger if exists append_only_guard on public.%I', t);
+    execute format(
+      'create trigger append_only_guard
+         before update or delete on public.%I
+         for each row execute function app.forbid_update_delete()', t);
+  end loop;
+end $$;
+
+-- ===========================================================================
+-- 10 ter. COHÉRENCE INTERORGANISATION DES RÉFÉRENCES
+-- ---------------------------------------------------------------------------
+-- Une clé étrangère classique garantit que la ligne visée existe, pas
+-- qu'elle appartient à la MÊME organisation. Sans ce contrôle, une écriture
+-- avec la clé serveur pourrait rattacher un dossier de l'organisation A à un
+-- document de l'organisation B.
+--
+-- Choix retenu : un DÉCLENCHEUR CENTRALISÉ plutôt que des clés étrangères
+-- composites. Motif : `product_variants` ne porte pas d'organisation (elle
+-- est sur `products`), une clé composite y imposerait une colonne redondante
+-- et sa synchronisation. Le déclencheur couvre tous les cas, y compris
+-- indirects, et s'applique à tous les rôles.
+-- ===========================================================================
+
+-- Organisation propriétaire d'un objet, quel que soit son type.
+create or replace function app.org_of(p_kind text, p_id uuid)
+returns uuid
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+  v_org uuid;
+begin
+  if p_id is null then return null; end if;
+  case p_kind
+    when 'profile' then
+      select organization_id into v_org from public.profiles where id = p_id;
+    when 'store' then
+      select organization_id into v_org from public.stores where id = p_id;
+    when 'warehouse' then
+      select organization_id into v_org from public.warehouses where id = p_id;
+    when 'supplier' then
+      select organization_id into v_org from public.suppliers where id = p_id;
+    when 'customer' then
+      select organization_id into v_org from public.customers where id = p_id;
+    when 'variant' then
+      -- L'organisation d'une variante est portée par son produit.
+      select p.organization_id into v_org
+      from public.product_variants v
+      join public.products p on p.id = v.product_id
+      where v.id = p_id;
+    when 'recap_source' then
+      select organization_id into v_org from public.recap_sources where id = p_id;
+    when 'recap_read' then
+      select organization_id into v_org from public.recap_reads where id = p_id;
+    when 'logistics_line' then
+      select organization_id into v_org from public.logistics_lines where id = p_id;
+    when 'delivery_job' then
+      select organization_id into v_org from public.delivery_jobs where id = p_id;
+    when 'document' then
+      select organization_id into v_org from public.skara_documents where id = p_id;
+    when 'extraction' then
+      select organization_id into v_org from public.skara_document_extractions where id = p_id;
+    else
+      raise exception 'Type d''objet inconnu pour le contrôle d''organisation : %', p_kind;
+  end case;
+  return v_org;
+end;
+$$;
+
+-- Déclencheur générique : arguments par paires « colonne, type d'objet ».
+create or replace function app.assert_same_org()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_row jsonb := to_jsonb(new);
+  v_org uuid := nullif(v_row->>'organization_id', '')::uuid;
+  v_col text;
+  v_kind text;
+  v_val uuid;
+  v_other uuid;
+  i integer := 0;
+begin
+  if v_org is null then
+    raise exception 'Organisation manquante sur %.', tg_table_name
+      using errcode = '23514';
+  end if;
+  while i < tg_nargs loop
+    v_col := tg_argv[i];
+    v_kind := tg_argv[i + 1];
+    v_val := nullif(v_row->>v_col, '')::uuid;
+    if v_val is not null then
+      v_other := app.org_of(v_kind, v_val);
+      if v_other is null then
+        raise exception 'Référence % introuvable sur %.', v_col, tg_table_name
+          using errcode = '23503';
+      end if;
+      if v_other <> v_org then
+        raise exception
+          'Référence interorganisation interdite : %.% pointe vers une autre organisation.',
+          tg_table_name, v_col
+          using errcode = '42501';
+      end if;
+    end if;
+    i := i + 2;
+  end loop;
+  return new;
+end;
+$$;
+
+do $$
+declare
+  spec record;
+begin
+  for spec in
+    select * from (values
+      ('recap_reads',
+       array['source_id','recap_source','triggered_by_profile_id','profile']),
+      ('logistics_lines',
+       array['source_id','recap_source','supplier_id','supplier',
+             'variant_id','variant','current_warehouse_id','warehouse',
+             'destination_warehouse_id','warehouse','created_by','profile']),
+      ('logistics_line_events',
+       array['logistics_line_id','logistics_line','warehouse_id','warehouse',
+             'recorded_by','profile']),
+      ('delivery_jobs',
+       array['customer_id','customer','store_id','store',
+             'origin_warehouse_id','warehouse','created_by','profile']),
+      ('delivery_allocations',
+       array['logistics_line_id','logistics_line','delivery_job_id','delivery_job',
+             'decided_by','profile']),
+      ('skara_documents',
+       array['uploaded_by','profile','delivery_job_id','delivery_job']),
+      ('skara_document_extractions',
+       array['document_id','document']),
+      ('skara_document_corrections',
+       array['document_id','document','extraction_id','extraction',
+             'corrected_by','profile']),
+      ('match_candidates',
+       array['subject_document_id','document','subject_line_id','logistics_line',
+             'target_job_id','delivery_job','target_line_id','logistics_line',
+             'decided_by','profile']),
+      ('logistics_anomalies',
+       array['recap_read_id','recap_read','logistics_line_id','logistics_line',
+             'document_id','document','delivery_job_id','delivery_job',
+             'resolved_by','profile']),
+      ('sensitive_access_logs',
+       array['profile_id','profile'])
+    ) as t(table_name, args)
+  loop
+    execute format('drop trigger if exists same_org_guard on public.%I', spec.table_name);
+    execute format(
+      'create trigger same_org_guard
+         before insert or update on public.%I
+         for each row execute function app.assert_same_org(%s)',
+      spec.table_name,
+      (select string_agg(quote_literal(a), ', ') from unnest(spec.args) as a));
+  end loop;
+end $$;
+
 -- ===========================================================================
 -- 11. FONCTIONS RPC
 -- ---------------------------------------------------------------------------
@@ -606,6 +826,31 @@ revoke update on public.product_variants from anon;
 --      organisation — refus explicite sinon (isolation interorganisation) ;
 --   4. search_path = '' et références entièrement qualifiées.
 -- ===========================================================================
+
+-- --- 11.0 Dernière correction d'un champ (valeur entière) ------------------
+-- Sélection DÉTERMINISTE : la correction la plus récente, départagée par id
+-- lorsque deux corrections partagent le même horodatage. Une valeur non
+-- entière (champ texte corrigé par erreur) est ignorée plutôt que de faire
+-- échouer la lecture du dossier.
+create or replace function app.last_correction_int(
+  p_extraction_id uuid,
+  p_field text
+)
+returns integer
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select case
+           when c.corrected_value ~ '^-?[0-9]+$' then c.corrected_value::integer
+         end
+  from public.skara_document_corrections c
+  where c.extraction_id = p_extraction_id
+    and c.field_name = p_field
+  order by c.corrected_at desc, c.id desc
+  limit 1
+$$;
 
 -- --- 11.1 Synthèse logistique (aucune donnée personnelle) ------------------
 create or replace function public.logistics_summary()
@@ -642,6 +887,48 @@ end;
 $$;
 
 -- --- 11.2 Référentiel logistique du catalogue (décision E17) ---------------
+--
+-- Convention de mise à jour, explicite et sans surprise :
+--   * clé ABSENTE du payload  → la valeur enregistrée est CONSERVÉE ;
+--   * clé présente à `null`   → la valeur est EFFACÉE (vidage volontaire) ;
+--   * clé présente à une valeur → validée strictement.
+-- Un nombre décimal est REFUSÉ (jamais arrondi en silence).
+
+create or replace function app.payload_int(
+  p_payload jsonb,
+  p_key text,
+  p_min integer,
+  p_max integer,
+  p_label text
+)
+returns integer
+language plpgsql
+immutable
+set search_path = ''
+as $$
+declare
+  v_node jsonb := p_payload -> p_key;
+  v_num numeric;
+begin
+  if v_node is null or jsonb_typeof(v_node) = 'null' then
+    return null;                        -- effacement volontaire
+  end if;
+  if jsonb_typeof(v_node) <> 'number' then
+    raise exception '% : valeur numérique attendue.', p_label;
+  end if;
+  v_num := v_node::text::numeric;
+  if v_num <> trunc(v_num) then
+    raise exception '% : nombre entier attendu (% refusé, aucun arrondi automatique).',
+      p_label, v_num;
+  end if;
+  if v_num < p_min or v_num > p_max then
+    raise exception '% : valeur hors limites (attendu entre % et %).',
+      p_label, p_min, p_max;
+  end if;
+  return v_num::integer;
+end;
+$$;
+
 create or replace function public.set_variant_logistics(
   p_variant_id uuid,
   p_payload jsonb
@@ -656,16 +943,9 @@ declare
   v_org uuid;
   v_variant_org uuid;
   v_title text;
-  v_weight integer;
   v_len integer;
   v_wid integer;
   v_hei integer;
-  v_volume integer;
-  v_packages integer;
-  v_handlers integer;
-  v_fragile boolean;
-  v_install boolean;
-  v_notes text;
 begin
   v_profile := app.require_permission('gerer_referentiel_logistique');
   v_org := app.current_org_id();
@@ -684,56 +964,72 @@ begin
       using errcode = '42501';
   end if;
 
-  v_weight   := nullif(p_payload->>'weight_grams', '')::integer;
-  v_len      := nullif(p_payload->>'packed_length_mm', '')::integer;
-  v_wid      := nullif(p_payload->>'packed_width_mm', '')::integer;
-  v_hei      := nullif(p_payload->>'packed_height_mm', '')::integer;
-  v_packages := nullif(p_payload->>'package_count', '')::integer;
-  v_handlers := nullif(p_payload->>'recommended_handlers', '')::integer;
-  v_fragile  := nullif(p_payload->>'fragile', '')::boolean;
-  v_install  := nullif(p_payload->>'requires_installation', '')::boolean;
-  v_notes    := nullif(p_payload->>'handling_notes', '');
-
-  -- Validation explicite : aucune correction silencieuse.
-  if v_weight is not null and (v_weight <= 0 or v_weight > 2000000) then
-    raise exception 'Poids invalide : indiquez une valeur en grammes entre 1 et 2 000 000.';
+  -- Validation AVANT toute écriture : en cas de refus, rien n'est modifié.
+  perform app.payload_int(p_payload, 'weight_grams', 1, 2000000, 'Poids (g)');
+  perform app.payload_int(p_payload, 'packed_length_mm', 1, 10000, 'Longueur emballée (mm)');
+  perform app.payload_int(p_payload, 'packed_width_mm', 1, 10000, 'Largeur emballée (mm)');
+  perform app.payload_int(p_payload, 'packed_height_mm', 1, 10000, 'Hauteur emballée (mm)');
+  perform app.payload_int(p_payload, 'package_count', 1, 50, 'Nombre de colis');
+  perform app.payload_int(p_payload, 'recommended_handlers', 1, 4, 'Livreurs conseillés');
+  perform app.payload_int(p_payload, 'volume_cm3', 1, 100000000, 'Volume (cm³)');
+  if p_payload ? 'fragile' and jsonb_typeof(p_payload->'fragile') not in ('boolean','null') then
+    raise exception 'Fragile : valeur vrai/faux attendue.';
   end if;
-  if (v_len is not null and (v_len <= 0 or v_len > 10000))
-     or (v_wid is not null and (v_wid <= 0 or v_wid > 10000))
-     or (v_hei is not null and (v_hei <= 0 or v_hei > 10000)) then
-    raise exception 'Dimension invalide : indiquez des millimètres entre 1 et 10 000.';
-  end if;
-  if v_packages is not null and (v_packages < 1 or v_packages > 50) then
-    raise exception 'Nombre de colis invalide : entre 1 et 50.';
-  end if;
-  if v_handlers is not null and (v_handlers < 1 or v_handlers > 4) then
-    raise exception 'Nombre de livreurs conseillé invalide : entre 1 et 4.';
-  end if;
-
-  -- Volume calculé si les trois dimensions sont fournies, sinon valeur reçue.
-  if v_len is not null and v_wid is not null and v_hei is not null then
-    v_volume := ((v_len::bigint * v_wid * v_hei) / 1000)::integer; -- mm³ → cm³
-  else
-    v_volume := nullif(p_payload->>'volume_cm3', '')::integer;
-    if v_volume is not null and (v_volume <= 0 or v_volume > 100000000) then
-      raise exception 'Volume invalide.';
-    end if;
+  if p_payload ? 'requires_installation'
+     and jsonb_typeof(p_payload->'requires_installation') not in ('boolean','null') then
+    raise exception 'Installation : valeur vrai/faux attendue.';
   end if;
 
   update public.product_variants
-  set weight_grams = coalesce(v_weight, weight_grams),
-      packed_length_mm = coalesce(v_len, packed_length_mm),
-      packed_width_mm = coalesce(v_wid, packed_width_mm),
-      packed_height_mm = coalesce(v_hei, packed_height_mm),
-      volume_cm3 = coalesce(v_volume, volume_cm3),
-      package_count = coalesce(v_packages, package_count),
-      fragile = coalesce(v_fragile, fragile),
-      requires_installation = coalesce(v_install, requires_installation),
-      recommended_handlers = coalesce(v_handlers, recommended_handlers),
-      handling_notes = coalesce(v_notes, handling_notes),
+  set weight_grams = case when p_payload ? 'weight_grams'
+        then app.payload_int(p_payload, 'weight_grams', 1, 2000000, 'Poids (g)')
+        else weight_grams end,
+      packed_length_mm = case when p_payload ? 'packed_length_mm'
+        then app.payload_int(p_payload, 'packed_length_mm', 1, 10000, 'Longueur emballée (mm)')
+        else packed_length_mm end,
+      packed_width_mm = case when p_payload ? 'packed_width_mm'
+        then app.payload_int(p_payload, 'packed_width_mm', 1, 10000, 'Largeur emballée (mm)')
+        else packed_width_mm end,
+      packed_height_mm = case when p_payload ? 'packed_height_mm'
+        then app.payload_int(p_payload, 'packed_height_mm', 1, 10000, 'Hauteur emballée (mm)')
+        else packed_height_mm end,
+      package_count = case when p_payload ? 'package_count'
+        then app.payload_int(p_payload, 'package_count', 1, 50, 'Nombre de colis')
+        else package_count end,
+      recommended_handlers = case when p_payload ? 'recommended_handlers'
+        then app.payload_int(p_payload, 'recommended_handlers', 1, 4, 'Livreurs conseillés')
+        else recommended_handlers end,
+      volume_cm3 = case when p_payload ? 'volume_cm3'
+        then app.payload_int(p_payload, 'volume_cm3', 1, 100000000, 'Volume (cm³)')
+        else volume_cm3 end,
+      fragile = case when p_payload ? 'fragile'
+        then nullif(p_payload->>'fragile', '')::boolean else fragile end,
+      requires_installation = case when p_payload ? 'requires_installation'
+        then nullif(p_payload->>'requires_installation', '')::boolean
+        else requires_installation end,
+      handling_notes = case when p_payload ? 'handling_notes'
+        then nullif(btrim(coalesce(p_payload->>'handling_notes', '')), '')
+        else handling_notes end,
       logistics_verified_at = now(),
       logistics_verified_by = v_profile
   where id = p_variant_id;
+
+  -- Volume DÉRIVÉ des dimensions finales : recalculé quand les trois sont
+  -- connues, effacé si l'une d'elles a été vidée — sauf si l'appelant a
+  -- explicitement fourni un volume.
+  if not (p_payload ? 'volume_cm3') then
+    select packed_length_mm, packed_width_mm, packed_height_mm
+    into v_len, v_wid, v_hei
+    from public.product_variants where id = p_variant_id;
+
+    update public.product_variants
+    set volume_cm3 = case
+          when v_len is not null and v_wid is not null and v_hei is not null
+            then ((v_len::bigint * v_wid * v_hei) / 1000)::integer  -- mm³ → cm³
+          else null
+        end
+    where id = p_variant_id;
+  end if;
 
   perform app.log_activity(
     v_org,
@@ -892,35 +1188,27 @@ begin
 
   if v_can_amounts then
     -- Montants RECOMPOSÉS (décision E16) : valeur brute de l'extraction,
-    -- remplacée par la correction la plus récente lorsqu'elle existe.
+    -- remplacée par la DERNIÈRE correction du champ lorsqu'elle existe.
+    --
+    -- « Dernière » = ordre déterministe `corrected_at desc, id desc` :
+    -- prendre le maximum de la VALEUR serait faux (une correction récente
+    -- peut abaisser un montant), et deux corrections au même horodatage
+    -- doivent être départagées de façon stable.
     select jsonb_build_object(
       'amount_total_cents',
-        coalesce(c.total, e.amount_total_cents),
+        coalesce(app.last_correction_int(e.id, 'amount_total_cents'), e.amount_total_cents),
       'amount_paid_cents',
-        coalesce(c.paid, e.amount_paid_cents),
+        coalesce(app.last_correction_int(e.id, 'amount_paid_cents'), e.amount_paid_cents),
       'amount_due_cents',
-        coalesce(c.due, e.amount_due_cents),
+        coalesce(app.last_correction_int(e.id, 'amount_due_cents'), e.amount_due_cents),
       'amount_to_collect_cents',
-        coalesce(c.collect, e.amount_to_collect_cents)
+        coalesce(app.last_correction_int(e.id, 'amount_to_collect_cents'), e.amount_to_collect_cents)
     )
     into v_amounts
     from public.skara_documents d
     join public.skara_document_extractions e on e.document_id = d.id
-    left join lateral (
-      select
-        max(case when field_name = 'amount_total_cents'
-                 then corrected_value end)::integer as total,
-        max(case when field_name = 'amount_paid_cents'
-                 then corrected_value end)::integer as paid,
-        max(case when field_name = 'amount_due_cents'
-                 then corrected_value end)::integer as due,
-        max(case when field_name = 'amount_to_collect_cents'
-                 then corrected_value end)::integer as collect
-      from public.skara_document_corrections
-      where extraction_id = e.id
-    ) c on true
     where d.delivery_job_id = v_job.id
-    order by e.extracted_at desc
+    order by e.extracted_at desc, e.id desc
     limit 1;
 
     if v_amounts is null then v_amounts := '{}'::jsonb; end if;

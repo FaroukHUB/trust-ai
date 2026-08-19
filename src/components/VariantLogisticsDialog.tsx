@@ -39,29 +39,51 @@ export function VariantLogisticsDialog({
   });
   const [busy, setBusy] = useState(false);
 
-  const numberOrUndefined = (value: string): number | undefined => {
+  /**
+   * Un champ vidé signifie « effacer cette caractéristique » : on transmet
+   * `null` explicite, jamais `undefined` (qui signifierait « ne pas
+   * toucher »). Les décimales sont REFUSÉES, jamais arrondies en silence —
+   * la fonction serveur applique la même règle.
+   */
+  const parseField = (
+    value: string,
+    label: string,
+  ): number | null | { error: string } => {
     const trimmed = value.trim();
-    if (trimmed === "") return undefined;
-    const parsed = Number(trimmed.replace(",", "."));
-    return Number.isFinite(parsed) ? Math.round(parsed) : NaN;
+    if (trimmed === "") return null; // effacement volontaire
+    const normalized = trimmed.replace(",", ".");
+    if (!/^-?\d+$/.test(normalized)) {
+      return {
+        error: /^-?\d*[.,]\d+$/.test(trimmed)
+          ? `${label} : nombre entier attendu (aucun arrondi automatique).`
+          : `${label} : valeur numérique attendue.`,
+      };
+    }
+    return Number(normalized);
   };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const fields: [keyof VariantLogistics, string, string][] = [
+      ["weightGrams", form.weightGrams, "Poids (g)"],
+      ["packedLengthMm", form.packedLengthMm, "Longueur emballée (mm)"],
+      ["packedWidthMm", form.packedWidthMm, "Largeur emballée (mm)"],
+      ["packedHeightMm", form.packedHeightMm, "Hauteur emballée (mm)"],
+      ["packageCount", form.packageCount, "Nombre de colis"],
+      ["recommendedHandlers", form.recommendedHandlers, "Livreurs conseillés"],
+    ];
     const payload: VariantLogistics = {
-      weightGrams: numberOrUndefined(form.weightGrams),
-      packedLengthMm: numberOrUndefined(form.packedLengthMm),
-      packedWidthMm: numberOrUndefined(form.packedWidthMm),
-      packedHeightMm: numberOrUndefined(form.packedHeightMm),
-      packageCount: numberOrUndefined(form.packageCount),
-      recommendedHandlers: numberOrUndefined(form.recommendedHandlers),
       fragile: form.fragile,
       requiresInstallation: form.requiresInstallation,
-      handlingNotes: form.handlingNotes.trim() || undefined,
+      handlingNotes: form.handlingNotes.trim() || null,
     };
-    if (Object.values(payload).some((v) => typeof v === "number" && Number.isNaN(v))) {
-      notify("Valeur numérique invalide.", "error");
-      return;
+    for (const [key, raw, label] of fields) {
+      const parsed = parseField(raw, label);
+      if (parsed !== null && typeof parsed === "object") {
+        notify(parsed.error, "error");
+        return;
+      }
+      (payload as Record<string, unknown>)[key] = parsed;
     }
     setBusy(true);
     try {

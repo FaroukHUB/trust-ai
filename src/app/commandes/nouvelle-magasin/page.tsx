@@ -1,8 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { PenLine, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, PenLine, Plus, Trash2 } from "lucide-react";
 import { useData, todayIso, BusinessError } from "@/lib/store/DataProvider";
 import { useSession } from "@/lib/auth/SessionProvider";
 import { hasPermission } from "@/lib/permissions";
@@ -166,6 +167,48 @@ export default function NewStoreOrderPage() {
   const rap = Math.max(0, Math.round((total - paid) * 100) / 100);
 
   if (!db) return <LoadingState />;
+
+  // Recentrage sur la logistique : Skara reste la SOURCE DE CRÉATION des
+  // commandes. Le formulaire est conservé (aucune donnée supprimée, aucune
+  // URL cassée) mais n'est plus utilisable en mode connecté ; il reste
+  // pleinement fonctionnel en mode démonstration pour les essais.
+  // La fonction serveur `create_store_order` est de toute façon révoquée :
+  // l'interface n'est pas la sécurité.
+  if (connected) {
+    return (
+      <div className="flex flex-col gap-4">
+        <Link
+          href="/commandes"
+          className="inline-flex items-center gap-1 text-sm font-medium"
+          style={{ color: "var(--muted)" }}
+        >
+          <ArrowLeft size={14} aria-hidden />
+          Commandes
+        </Link>
+        <div className="card max-w-2xl p-6">
+          <h1 className="text-lg font-bold">Création de commande désactivée</h1>
+          <p className="mt-2 text-sm">
+            Les commandes clients sont créées dans <strong>Skara</strong>, qui
+            reste la source de vérité commerciale. TRUST AI ne les recrée pas :
+            il prend le relais sur la logistique — disponibilité des
+            marchandises, prise de rendez-vous, tournées et livraisons.
+          </p>
+          <p className="mt-3 text-sm" style={{ color: "var(--muted)" }}>
+            Les commandes déjà enregistrées ici restent consultables : rien
+            n&apos;a été supprimé.
+          </p>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <Link href="/commandes" className="btn-primary">
+              Voir les commandes
+            </Link>
+            <Link href="/logistique" className="btn-secondary">
+              Aller à la logistique
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const validate = (): string[] => {
     const errs: string[] = [];

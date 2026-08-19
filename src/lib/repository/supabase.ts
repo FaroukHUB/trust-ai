@@ -578,21 +578,22 @@ export class SupabaseRepository {
     variantId: string,
     logistics: VariantLogistics,
   ): Promise<void> {
+    // Un champ ABSENT n'est pas transmis (valeur conservée) ; un champ à
+    // `null` EST transmis pour effacer la caractéristique côté serveur.
     const payload: Record<string, unknown> = {};
-    if (logistics.weightGrams !== undefined) payload.weight_grams = logistics.weightGrams;
-    if (logistics.packedLengthMm !== undefined) payload.packed_length_mm = logistics.packedLengthMm;
-    if (logistics.packedWidthMm !== undefined) payload.packed_width_mm = logistics.packedWidthMm;
-    if (logistics.packedHeightMm !== undefined) payload.packed_height_mm = logistics.packedHeightMm;
-    if (logistics.volumeCm3 !== undefined) payload.volume_cm3 = logistics.volumeCm3;
-    if (logistics.packageCount !== undefined) payload.package_count = logistics.packageCount;
-    if (logistics.fragile !== undefined) payload.fragile = logistics.fragile;
-    if (logistics.requiresInstallation !== undefined) {
-      payload.requires_installation = logistics.requiresInstallation;
-    }
-    if (logistics.recommendedHandlers !== undefined) {
-      payload.recommended_handlers = logistics.recommendedHandlers;
-    }
-    if (logistics.handlingNotes !== undefined) payload.handling_notes = logistics.handlingNotes;
+    const put = (key: string, value: number | boolean | string | null | undefined) => {
+      if (value !== undefined) payload[key] = value;
+    };
+    put("weight_grams", logistics.weightGrams);
+    put("packed_length_mm", logistics.packedLengthMm);
+    put("packed_width_mm", logistics.packedWidthMm);
+    put("packed_height_mm", logistics.packedHeightMm);
+    put("volume_cm3", logistics.volumeCm3);
+    put("package_count", logistics.packageCount);
+    put("fragile", logistics.fragile);
+    put("requires_installation", logistics.requiresInstallation);
+    put("recommended_handlers", logistics.recommendedHandlers);
+    put("handling_notes", logistics.handlingNotes);
 
     const { error } = await this.supabase.rpc("set_variant_logistics", {
       p_variant_id: variantId,
