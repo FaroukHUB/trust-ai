@@ -42,6 +42,8 @@ export interface PageAccess {
 export const PAGE_ACCESS: PageAccess[] = [
   { href: "/dashboard", permissions: null },
   { href: "/logistique", permissions: ["gerer_livraisons", "gerer_logistique"] },
+  { href: "/logistique/recap", permissions: ["importer_recap"] },
+  { href: "/logistique/lignes", permissions: ["gerer_livraisons", "gerer_logistique"] },
   { href: "/commandes", permissions: ["creer_commande", "gerer_achats", "gerer_logistique", "gerer_encaissements", "valider_decision"] },
   { href: "/catalogue", permissions: ["creer_commande", "gerer_achats", "gerer_catalogue", "gerer_referentiel_logistique"] },
   { href: "/arrivages", permissions: ["gerer_logistique", "gerer_achats"] },

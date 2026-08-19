@@ -254,6 +254,91 @@ export interface LogisticsSummary {
   documentsAVerifier: number;
 }
 
+// ---------------------------------------------------------------------------
+// Récapitulatif Google Sheets (phase 2)
+// ---------------------------------------------------------------------------
+
+/** Configuration de la source de récapitulatif (lecture seule côté TRUST AI). */
+export interface RecapSource {
+  id: string;
+  label: string;
+  spreadsheetId: string;
+  sheetName: string;
+  headerRow: number;
+  /** Colonne « ID TRUST », alimentée par l'Apps Script installé dans le Sheet. */
+  idColumn?: string;
+  /** Mapping « champ métier → en-tête de colonne ». */
+  columnMapping: Record<string, string>;
+  lastReadAt?: string;
+  lastReadStatus?: string;
+  lastRead?: RecapReadReport;
+}
+
+export interface RecapReadReport {
+  startedAt: string;
+  finishedAt?: string;
+  rowsRead: number;
+  rowsCreated: number;
+  rowsUpdated: number;
+  rowsIgnored: number;
+  errorsCount: number;
+  report: Record<string, number>;
+}
+
+export interface RecapSourceInput {
+  label: string;
+  spreadsheetId: string;
+  sheetName: string;
+  headerRow: number;
+  idColumn?: string;
+  columnMapping: Record<string, string>;
+}
+
+export interface LogisticsLineFilters {
+  search?: string;
+  stage?: string;
+  supplier?: string;
+  warehouseId?: string;
+  onlyAnomalies?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+/** Ligne du récapitulatif telle qu'affichée dans la liste. */
+export interface LogisticsLineRow {
+  id: string;
+  recap_row_id?: string;
+  recap_date?: string;
+  supplier_label?: string;
+  supplier_reference?: string;
+  /** Numéro de commande FOURNISSEUR (colonne « ORDER »), jamais le client. */
+  supplier_order_ref?: string;
+  designation: string;
+  quantity: number;
+  customer_label?: string;
+  expected_at?: string;
+  comments?: string;
+  stage: string;
+  destination_confidence: string;
+  destination_label?: string;
+  current_label?: string;
+  missing_since?: string;
+  last_seen_at?: string;
+  last_changed_at?: string;
+  open_anomalies: number;
+}
+
+export interface LogisticsLinePage {
+  total: number;
+  rows: LogisticsLineRow[];
+}
+
+export interface LogisticsLineDetail {
+  line: Record<string, unknown> | null;
+  events: Record<string, unknown>[];
+  anomalies: Record<string, unknown>[];
+}
+
 /**
  * Caractéristiques logistiques d'une variante (toutes facultatives).
  *

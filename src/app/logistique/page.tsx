@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { PackageSearch, RefreshCw } from "lucide-react";
+import Link from "next/link";
+import { FileSpreadsheet, PackageSearch, RefreshCw } from "lucide-react";
 import { useData } from "@/lib/store/DataProvider";
 import { useSession } from "@/lib/auth/SessionProvider";
 import { StatCard } from "@/components/ui/StatCard";
@@ -68,17 +69,28 @@ export default function LogistiquePage() {
         </p>
       </div>
 
+      <div className="flex flex-wrap gap-2">
+        <Link href="/logistique/lignes" className="btn-primary">
+          <PackageSearch size={16} aria-hidden />
+          Lignes du récapitulatif
+        </Link>
+        <Link href="/logistique/recap" className="btn-secondary">
+          <FileSpreadsheet size={16} aria-hidden />
+          Configurer le récapitulatif
+        </Link>
+      </div>
+
       <div
         className="card p-4 text-sm"
         style={{ borderColor: "var(--primary)", background: "var(--primary-soft)" }}
         role="status"
       >
-        <p className="font-semibold">Socle en place — connexion des sources à venir</p>
+        <p className="font-semibold">Suivi des marchandises actif</p>
         <p className="mt-1">
-          Les fondations du module (suivi des marchandises, dossiers, documents,
-          rapprochement) sont installées et sécurisées. La lecture du fichier
-          récapitulatif et l&apos;import des factures Skara arrivent aux phases
-          suivantes : les compteurs ci-dessous resteront donc à zéro d&apos;ici là.
+          Le fichier récapitulatif alimente les lignes logistiques : arrivées,
+          transferts Argenteuil → Aubagne et disponibilité. Le rapprochement
+          avec les factures Skara et la prise de rendez-vous client arrivent
+          aux phases suivantes.
         </p>
       </div>
 

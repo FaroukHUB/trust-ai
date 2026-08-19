@@ -213,3 +213,19 @@ export const roleLabels: Record<Role, string> = {
   direction: "Direction",
   administrateur: "Administrateur",
 };
+
+/**
+ * Étapes d'une ligne du récapitulatif (phase 2). L'étape décrit OÙ se trouve
+ * la marchandise ; les retards et les anomalies sont suivis séparément.
+ */
+export const logisticsStageLabels: Record<string, { label: string; tone: BadgeTone }> = {
+  a_commander: { label: "À commander", tone: "warning" },
+  commandee: { label: "Commandée", tone: "info" },
+  attendue: { label: "Attendue", tone: "info" },
+  recue_argenteuil: { label: "Reçue à Argenteuil", tone: "info" },
+  en_transfert: { label: "En transfert vers Aubagne", tone: "info" },
+  recue_aubagne: { label: "Reçue à Aubagne", tone: "info" },
+  disponible: { label: "Disponible", tone: "success" },
+  sortie: { label: "Sortie", tone: "neutral" },
+  annulee: { label: "Annulée", tone: "neutral" },
+};

@@ -121,12 +121,29 @@ jobs:
       - name: Empreinte du schéma après la 1re application
         run: pg_dump --schema-only --no-owner "$PGDATABASE" | grep -v -E '^\\(restrict|unrestrict)' > /tmp/schema1.sql
 
-      - name: Appliquer les migrations une 2e fois (rejouabilité)
+      - name: Appliquer une 2e fois les migrations REJOUABLES
+        # Toutes les migrations ne se rejouent pas : les migrations 1 à 8 ont
+        # été appliquées une seule fois, avant l'ouverture du projet, et
+        # créent leurs objets sans garde (« create table public.x »). Les
+        # migrations récentes, elles, sont explicitement conçues pour être
+        # collées deux fois sans dégât dans le SQL Editor : elles le
+        # DÉCLARENT dans leur en-tête avec le mot « rejouable ». C'est ce
+        # marqueur — et non une liste écrite à la main qui se périmerait —
+        # qui pilote ce contrôle.
         run: |
           set -euo pipefail
+          trouvee=0
           for f in supabase/migrations/*.sql; do
-            psql -v ON_ERROR_STOP=1 -q -f "$f"
+            if grep -qi 'rejouable' "$f"; then
+              echo "== rejeu : $f"
+              psql -v ON_ERROR_STOP=1 -q -f "$f"
+              trouvee=$((trouvee + 1))
+            fi
           done
+          if [ "$trouvee" -lt 2 ]; then
+            echo "ÉCHEC : $trouvee migration(s) rejouable(s) trouvée(s), 2 attendues au minimum"
+            exit 1
+          fi
 
       - name: Vérifier que le schéma est identique et sans doublon
         run: |
@@ -193,7 +210,19 @@ jobs:
               and routine_name in ('logistics_summary','set_variant_logistics',
                                    'allocate_to_delivery_job','get_delivery_job');
             if v <> 0 then raise exception 'Exécution ouverte à anon/PUBLIC : %', v; end if;
-            raise notice '13 tables verrouillées, RLS active, aucune RPC ouverte à anon.';
+
+            -- Les fonctions INTERNES (schéma app) ne sont appelables ni par
+            -- PUBLIC, ni par anon, ni par un utilisateur authentifié : elles
+            -- ne servent qu'aux RPC « security definer » et aux déclencheurs.
+            select count(*) into v from information_schema.routine_privileges
+            where routine_schema = 'app'
+              and grantee in ('anon','authenticated','PUBLIC')
+              and routine_name in ('org_of','payload_int','last_correction_int',
+                                   'forbid_update_delete','assert_same_org');
+            if v <> 0 then
+              raise exception 'Fonctions internes app.* encore exposées : %', v;
+            end if;
+            raise notice '13 tables verrouillées, RLS active, aucune RPC ni fonction interne ouverte.';
           end $$;
           SQL
 
@@ -202,6 +231,11 @@ jobs:
           set -euo pipefail
           psql -v ON_ERROR_STOP=1 -f supabase/tests/rls_policies.test.sql
           psql -v ON_ERROR_STOP=1 -f supabase/tests/phase1_logistique.test.sql
+
+      - name: Tests du récapitulatif Google Sheets (phase 2)
+        run: |
+          set -euo pipefail
+          psql -v ON_ERROR_STOP=1 -f supabase/tests/phase2_recap.test.sql
 
       - name: Test de concurrence (suraffectation impossible)
         run: |
@@ -281,11 +315,19 @@ jobs:
           psql -v ON_ERROR_STOP=1 -q -c \
             "update public.profiles set role = 'logistique'
              where role in ('responsable_logistique','livreur')"
+          # Les retours arrière se déroulent dans l'ordre inverse des
+          # migrations : la phase 2 d'abord, le socle ensuite.
+          psql -v ON_ERROR_STOP=1 -q -f supabase/rollbacks/ROLLBACK_20260820001000_recap_google_sheets.sql
           psql -v ON_ERROR_STOP=1 -q -f supabase/rollbacks/ROLLBACK_20260819000900_socle_logistique.sql
           psql -v ON_ERROR_STOP=1 -t <<'SQL'
           do $$
           declare v integer;
           begin
+            select count(*) into v from information_schema.routines
+            where routine_schema='public' and routine_name in (
+              'get_recap_source','upsert_recap_source','sync_recap_rows',
+              'list_logistics_lines','get_logistics_line');
+            if v <> 0 then raise exception 'Fonctions phase 2 restantes : %', v; end if;
             select count(*) into v from information_schema.tables
             where table_schema='public' and table_name in (
               'recap_sources','recap_reads','logistics_lines','logistics_line_events',

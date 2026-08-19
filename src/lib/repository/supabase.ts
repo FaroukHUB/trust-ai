@@ -8,8 +8,14 @@ import type {
   Database,
   DeliveryStatus,
   FulfillmentMode,
+  LogisticsLineDetail,
+  LogisticsLineFilters,
+  LogisticsLinePage,
+  LogisticsLineRow,
   LogisticsSummary,
   OrderOrigin,
+  RecapSource,
+  RecapSourceInput,
   OrderStatus,
   PaymentMethod,
   ProcurementStatus,
@@ -571,6 +577,83 @@ export class SupabaseRepository {
       anomaliesOuvertes: Number(row.anomalies_ouvertes ?? 0),
       documentsAVerifier: Number(row.documents_a_verifier ?? 0),
     };
+  }
+
+  // --- Récapitulatif Google Sheets (phase 2) -------------------------------
+
+  /** Configuration de la source de récapitulatif (null si non configurée). */
+  async getRecapSource(): Promise<RecapSource | null> {
+    const { data, error } = await this.supabase.rpc("get_recap_source");
+    throwAsBusiness(error);
+    if (!data) return null;
+    const row = data as Record<string, unknown>;
+    const last = (row.last_read ?? null) as Record<string, unknown> | null;
+    return {
+      id: String(row.id),
+      label: String(row.label ?? ""),
+      spreadsheetId: (row.spreadsheet_id as string) ?? "",
+      sheetName: (row.sheet_name as string) ?? "",
+      headerRow: Number(row.header_row ?? 1),
+      idColumn: (row.id_column as string) ?? undefined,
+      columnMapping: (row.column_mapping ?? {}) as Record<string, string>,
+      lastReadAt: (row.last_read_at as string) ?? undefined,
+      lastReadStatus: (row.last_read_status as string) ?? undefined,
+      lastRead: last
+        ? {
+            startedAt: String(last.started_at ?? ""),
+            finishedAt: (last.finished_at as string) ?? undefined,
+            rowsRead: Number(last.rows_read ?? 0),
+            rowsCreated: Number(last.rows_created ?? 0),
+            rowsUpdated: Number(last.rows_updated ?? 0),
+            rowsIgnored: Number(last.rows_ignored ?? 0),
+            errorsCount: Number(last.errors_count ?? 0),
+            report: (last.report ?? {}) as Record<string, number>,
+          }
+        : undefined,
+    };
+  }
+
+  /** Crée ou met à jour la configuration (permission « importer_recap »). */
+  async upsertRecapSource(input: RecapSourceInput): Promise<void> {
+    const { error } = await this.supabase.rpc("upsert_recap_source", {
+      p_payload: {
+        label: input.label,
+        spreadsheet_id: input.spreadsheetId,
+        sheet_name: input.sheetName,
+        header_row: input.headerRow,
+        id_column: input.idColumn ?? null,
+        column_mapping: input.columnMapping,
+      },
+    });
+    throwAsBusiness(error);
+  }
+
+  /** Lignes logistiques paginées et filtrées (aucun accès direct aux tables). */
+  async listLogisticsLines(filters: LogisticsLineFilters): Promise<LogisticsLinePage> {
+    const { data, error } = await this.supabase.rpc("list_logistics_lines", {
+      p_search: filters.search ?? null,
+      p_stage: filters.stage ?? null,
+      p_supplier: filters.supplier ?? null,
+      p_warehouse_id: filters.warehouseId ?? null,
+      p_only_anomalies: filters.onlyAnomalies ?? false,
+      p_limit: filters.limit ?? 50,
+      p_offset: filters.offset ?? 0,
+    });
+    throwAsBusiness(error);
+    const row = (data ?? {}) as { total?: number; rows?: unknown[] };
+    return {
+      total: Number(row.total ?? 0),
+      rows: (row.rows ?? []) as LogisticsLineRow[],
+    };
+  }
+
+  /** Détail d'une ligne : historique des événements et anomalies. */
+  async getLogisticsLine(lineId: string): Promise<LogisticsLineDetail> {
+    const { data, error } = await this.supabase.rpc("get_logistics_line", {
+      p_line_id: lineId,
+    });
+    throwAsBusiness(error);
+    return (data ?? { line: null, events: [], anomalies: [] }) as LogisticsLineDetail;
   }
 
   /** Référentiel logistique d'une variante (validation côté serveur). */

@@ -174,7 +174,7 @@ describe("Hygiène des secrets", () => {
             offenders.push(`${full} (secret exposé en NEXT_PUBLIC_)`);
           }
           // Aucun secret serveur assigné en littéral (NAME = "valeur").
-          for (const name of ["SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY", "SHOPIFY_ADMIN_ACCESS_TOKEN", "SHOPIFY_WEBHOOK_SECRET"]) {
+          for (const name of ["SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY", "SHOPIFY_ADMIN_ACCESS_TOKEN", "SHOPIFY_WEBHOOK_SECRET", "GOOGLE_PRIVATE_KEY"]) {
             if (new RegExp(`${name}\\s*[:=]\\s*["'\`][^"'\`]`).test(content)) {
               offenders.push(`${full} (${name} assigné en littéral)`);
             }
@@ -184,6 +184,51 @@ describe("Hygiène des secrets", () => {
     };
     scan(path.join(process.cwd(), "src"));
     expect(offenders).toEqual([]);
+  });
+
+  it("la clé Google ne sort jamais du serveur", () => {
+    // GOOGLE_PRIVATE_KEY / GOOGLE_SERVICE_ACCOUNT_EMAIL ne doivent être lus
+    // que par le module serveur dédié — jamais par un composant client, un
+    // fichier de types partagés ou une page.
+    const autorises = new Set([
+      path.join("src", "lib", "recap", "google-sheets.ts"),
+      // La route serveur cite les NOMS des variables dans un message d'aide,
+      // jamais leurs valeurs.
+      path.join("src", "app", "api", "recap", "sync", "route.ts"),
+    ]);
+    const fautifs: string[] = [];
+    const scan = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          scan(full);
+          continue;
+        }
+        // Les fichiers de test citent forcément les noms qu'ils contrôlent.
+        if (!/\.(ts|tsx)$/.test(entry.name) || /\.test\.tsx?$/.test(entry.name)) {
+          continue;
+        }
+        const relatif = path.relative(process.cwd(), full);
+        if (autorises.has(relatif)) continue;
+        const contenu = fs.readFileSync(full, "utf8");
+        if (/GOOGLE_(PRIVATE_KEY|SERVICE_ACCOUNT_EMAIL)/.test(contenu)) {
+          fautifs.push(relatif);
+        }
+      }
+    };
+    scan(path.join(process.cwd(), "src"));
+    expect(fautifs).toEqual([]);
+  });
+
+  it("le module Google Sheets ne demande que la LECTURE", () => {
+    const source = fs.readFileSync(
+      path.join(process.cwd(), "src/lib/recap/google-sheets.ts"),
+      "utf8",
+    );
+    expect(source).toContain("spreadsheets.readonly");
+    // Aucune portée d'écriture, sous aucune forme.
+    expect(source).not.toMatch(/auth\/spreadsheets(?!\.readonly)/);
+    expect(source).not.toMatch(/drive\.file|auth\/drive(?!\.readonly)/);
   });
 
   it("le seed distant ne contient aucun mot de passe ni compte auth", () => {

@@ -1263,4 +1263,28 @@ begin
   end loop;
 end $$;
 
+-- Fonctions INTERNES : elles ne sont appelées que depuis les RPC publiques
+-- (security definer, donc avec les droits du propriétaire) et depuis les
+-- déclencheurs (exécutés au nom du propriétaire de la table). Personne ne
+-- doit pouvoir les appeler directement : `app.org_of` révélerait
+-- l'existence d'objets d'autres organisations, et `app.payload_int` ou
+-- `app.forbid_update_delete` n'ont aucun sens hors de leur contexte.
+do $$
+declare
+  f text;
+begin
+  foreach f in array array[
+    'app.last_correction_int(uuid, text)',
+    'app.org_of(text, uuid)',
+    'app.payload_int(jsonb, text, integer, integer, text)',
+    'app.forbid_update_delete()',
+    'app.assert_same_org()'
+  ]
+  loop
+    execute format('revoke all on function %s from public', f);
+    execute format('revoke all on function %s from anon', f);
+    execute format('revoke all on function %s from authenticated', f);
+  end loop;
+end $$;
+
 commit;
