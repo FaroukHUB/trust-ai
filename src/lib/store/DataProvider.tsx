@@ -22,13 +22,19 @@ import {
   prepareSupplierOrderM,
   receiveShipmentM,
   requestOrderCancellationM,
+  setVariantLogisticsM,
   updateLineStatusM,
   type DecideApprovalOptions,
   type NewStoreOrderInput,
   type PaymentInput,
 } from "../mutations";
 import type { AppMode } from "../config";
-import type { Database, ProcurementStatus } from "../types";
+import type {
+  Database,
+  LogisticsSummary,
+  ProcurementStatus,
+  VariantLogistics,
+} from "../types";
 
 export type { NewStoreOrderInput, NewOrderLineInput, PaymentInput } from "../mutations";
 export { BusinessError } from "../mutations";
@@ -85,6 +91,13 @@ interface DataContextValue {
   receiveShipment: (
     shipmentId: string,
     receipts: { itemId: string; quantityReceived: number }[],
+  ) => Promise<void>;
+  /** Compteurs du module logistique (mode connecté : RPC serveur). */
+  logisticsSummary: () => Promise<LogisticsSummary>;
+  /** Référentiel logistique d'une variante (validation côté serveur). */
+  setVariantLogistics: (
+    variantId: string,
+    logistics: VariantLogistics,
   ) => Promise<void>;
   resetDemo: () => void;
 }
@@ -254,6 +267,33 @@ export function DataProvider({ children }: { children: ReactNode }) {
     [remote, refresh, applyLocal],
   );
 
+  // --- Socle logistique (phase 1) -----------------------------------------
+  const logisticsSummary = useCallback(async (): Promise<LogisticsSummary> => {
+    if (remote) return remote.logisticsSummary();
+    // Mode démonstration : le module logistique s'appuie sur la base
+    // partagée ; aucun compteur simulé n'est inventé.
+    return {
+      lignesTotal: 0,
+      lignesDisponibles: 0,
+      dossiersTotal: 0,
+      dossiersAContacter: 0,
+      anomaliesOuvertes: 0,
+      documentsAVerifier: 0,
+    };
+  }, [remote]);
+
+  const setVariantLogistics = useCallback(
+    async (variantId: string, logistics: VariantLogistics) => {
+      if (remote) {
+        await remote.setVariantLogistics(variantId, logistics);
+        await refresh();
+        return;
+      }
+      applyLocal((d) => setVariantLogisticsM(d, variantId, logistics));
+    },
+    [remote, refresh, applyLocal],
+  );
+
   const receiveShipment = useCallback(
     async (
       shipmentId: string,
@@ -292,6 +332,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
       requestOrderCancellation,
       updateLineStatus,
       receiveShipment,
+      logisticsSummary,
+      setVariantLogistics,
       resetDemo,
     }),
     [
@@ -308,6 +350,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
       requestOrderCancellation,
       updateLineStatus,
       receiveShipment,
+      logisticsSummary,
+      setVariantLogistics,
       resetDemo,
     ],
   );

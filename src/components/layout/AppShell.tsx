@@ -4,20 +4,18 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
+  Archive,
   BarChart3,
   BookOpen,
   Building2,
   CheckSquare,
   CircleAlert,
   ClipboardList,
-  CreditCard,
   LayoutDashboard,
   LogOut,
-  Megaphone,
   Menu,
-  PhoneOutgoing,
+  PackageSearch,
   RotateCcw,
-  ShoppingCart,
   Store,
   Truck,
   UserCircle2,
@@ -32,17 +30,22 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { TrustLogoTile } from "@/components/ui/TrustLogo";
 import { LoadingState } from "@/components/ui/LoadingState";
 
+/**
+ * Menu principal recentré sur la logistique (phase 1). Les modules
+ * commerciaux recouverts par Skara (achats, relances, encaissements,
+ * acquisition, création de commande magasin) ne sont plus listés ici : ils
+ * restent accessibles dans Paramètres › Archives. Aucune page n'est
+ * supprimée et aucune URL n'est cassée.
+ */
 const navigation = [
   { href: "/dashboard", label: "Tableau de bord", icon: LayoutDashboard },
+  { href: "/logistique", label: "Logistique", icon: PackageSearch },
   { href: "/commandes", label: "Commandes", icon: ClipboardList },
-  { href: "/catalogue", label: "Catalogue", icon: BookOpen },
-  { href: "/validations", label: "Validations", icon: CheckSquare },
-  { href: "/achats", label: "Achats fournisseurs", icon: ShoppingCart },
-  { href: "/relances", label: "Relances du lundi", icon: PhoneOutgoing },
   { href: "/arrivages", label: "Arrivages", icon: Truck },
+  { href: "/catalogue", label: "Référentiel produits", icon: BookOpen },
   { href: "/fournisseurs", label: "Fournisseurs", icon: Building2 },
-  { href: "/encaissements", label: "Encaissements", icon: CreditCard },
-  { href: "/acquisition", label: "Acquisition", icon: Megaphone },
+  { href: "/validations", label: "Validations", icon: CheckSquare },
+  { href: "/parametres/archives", label: "Archives", icon: Archive },
 ];
 
 // Routes d'authentification : rendues sans la coque applicative.

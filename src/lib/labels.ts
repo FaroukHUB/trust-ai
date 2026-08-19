@@ -208,6 +208,8 @@ export const roleLabels: Record<Role, string> = {
   achats: "Achats",
   logistique: "Logistique",
   comptabilite: "Comptabilité",
+  responsable_logistique: "Responsable logistique",
+  livreur: "Livreur",
   direction: "Direction",
   administrateur: "Administrateur",
 };

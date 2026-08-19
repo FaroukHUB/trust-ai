@@ -8,6 +8,7 @@ import {
   markReminderDoneM,
   receiveShipmentM,
   requestOrderCancellationM,
+  setVariantLogisticsM,
   updateLineStatusM,
 } from "./mutations";
 import {
@@ -633,5 +634,53 @@ describe("Qualification d'une ligne (updateLineStatusM)", () => {
     const line = db.orderLines[0];
     line.procurementStatus = "annule";
     expect(() => updateLineStatusM(db, line.id, "stock_local")).toThrow(BusinessError);
+  });
+});
+
+describe("Référentiel logistique (setVariantLogisticsM)", () => {
+  it("refuse les valeurs aberrantes sans rien enregistrer", () => {
+    const variant = db.productVariants[0];
+    expect(() =>
+      setVariantLogisticsM(db, variant.id, { recommendedHandlers: 9 }),
+    ).toThrow(BusinessError);
+    expect(() => setVariantLogisticsM(db, variant.id, { weightGrams: -5 })).toThrow(
+      BusinessError,
+    );
+    expect(() => setVariantLogisticsM(db, variant.id, { packageCount: 0 })).toThrow(
+      BusinessError,
+    );
+    expect(variant.logistics).toBeUndefined();
+  });
+
+  it("calcule le volume dès que les trois dimensions emballées sont connues", () => {
+    const variant = db.productVariants[0];
+    setVariantLogisticsM(db, variant.id, {
+      weightGrams: 45000,
+      packedLengthMm: 2500,
+      packedWidthMm: 1000,
+      packedHeightMm: 800,
+      packageCount: 2,
+      recommendedHandlers: 2,
+      fragile: true,
+    });
+    expect(variant.logistics?.volumeCm3).toBe((2500 * 1000 * 800) / 1000);
+    expect(variant.logistics?.weightGrams).toBe(45000);
+    expect(variant.logistics?.fragile).toBe(true);
+    expect(variant.logistics?.verifiedAt).toBeTruthy();
+  });
+
+  it("conserve les valeurs déjà saisies lors d'une mise à jour partielle", () => {
+    const variant = db.productVariants[0];
+    setVariantLogisticsM(db, variant.id, { weightGrams: 30000, packageCount: 3 });
+    setVariantLogisticsM(db, variant.id, { fragile: true });
+    expect(variant.logistics?.weightGrams).toBe(30000);
+    expect(variant.logistics?.packageCount).toBe(3);
+    expect(variant.logistics?.fragile).toBe(true);
+  });
+
+  it("refuse une variante inconnue", () => {
+    expect(() => setVariantLogisticsM(db, "inexistante", { weightGrams: 1 })).toThrow(
+      BusinessError,
+    );
   });
 });

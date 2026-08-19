@@ -12,12 +12,31 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { PaginationBar, usePagination } from "@/components/ui/Pagination";
 import { formatDate, formatEuro } from "@/lib/format";
 import { productCategoryLabels, productSourceLabels } from "@/lib/labels";
-import type { ProductCategory } from "@/lib/types";
+import { VariantLogisticsDialog } from "@/components/VariantLogisticsDialog";
+import type { ProductCategory, ProductVariant } from "@/lib/types";
+
+/**
+ * Résumé lisible du référentiel logistique d'une variante : ce qui est
+ * renseigné, sans jamais inventer une valeur absente.
+ */
+function describeLogistics(variant: ProductVariant): string {
+  const l = variant.logistics;
+  if (!l) return "· logistique à renseigner";
+  const parts: string[] = [];
+  if (l.weightGrams) parts.push(`${(l.weightGrams / 1000).toFixed(1)} kg`);
+  if (l.volumeCm3) parts.push(`${(l.volumeCm3 / 1_000_000).toFixed(2)} m³`);
+  if (l.packageCount) parts.push(`${l.packageCount} colis`);
+  if (l.recommendedHandlers) parts.push(`${l.recommendedHandlers} livreur(s)`);
+  if (l.fragile) parts.push("fragile");
+  if (l.requiresInstallation) parts.push("installation");
+  return parts.length > 0 ? `· ${parts.join(" · ")}` : "· logistique à renseigner";
+}
 
 export default function CataloguePage() {
   const { db, mode, refresh } = useData();
   const { profile } = useSession();
   const { notify } = useToast();
+  const [variantToEdit, setVariantToEdit] = useState<ProductVariant | null>(null);
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<"all" | ProductCategory>("all");
   const [activeFilter, setActiveFilter] = useState<"all" | "actifs" | "inactifs">("actifs");
@@ -26,6 +45,11 @@ export default function CataloguePage() {
 
   const canSync =
     mode === "connected" && profile !== null && hasPermission(profile.role, "gerer_catalogue");
+
+  // Référentiel logistique : écriture par fonction serveur uniquement.
+  const canEditLogistics =
+    mode === "demo" ||
+    (profile !== null && hasPermission(profile.role, "gerer_referentiel_logistique"));
 
   // Synchronisation page par page (100 produits par requête) : chaque appel
   // serveur reste court, donc jamais de timeout, et la progression s'affiche
@@ -254,6 +278,21 @@ export default function CataloguePage() {
                                 · {v.sku} · {formatEuro(v.price)}
                                 {v.dimensions ? ` · ${v.dimensions}` : ""}
                               </span>
+                              <span className="ml-1 inline-flex items-center gap-1.5">
+                                <span className="text-xs" style={{ color: "var(--muted)" }}>
+                                  {describeLogistics(v)}
+                                </span>
+                                {canEditLogistics ? (
+                                  <button
+                                    type="button"
+                                    className="text-xs underline"
+                                    style={{ color: "var(--primary)" }}
+                                    onClick={() => setVariantToEdit(v)}
+                                  >
+                                    Logistique
+                                  </button>
+                                ) : null}
+                              </span>
                             </li>
                           ))}
                           {variants.length === 0 ? (
@@ -307,6 +346,13 @@ export default function CataloguePage() {
           />
         </div>
       )}
+
+      {variantToEdit ? (
+        <VariantLogisticsDialog
+          variant={variantToEdit}
+          onClose={() => setVariantToEdit(null)}
+        />
+      ) : null}
     </div>
   );
 }

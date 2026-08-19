@@ -9,6 +9,7 @@ import type {
   OrderLine,
   Payment,
   ProcurementStatus,
+  VariantLogistics,
 } from "./types";
 
 /**
@@ -619,6 +620,58 @@ export function receiveShipmentM(
 // ---------------------------------------------------------------------------
 // Divers
 // ---------------------------------------------------------------------------
+
+/**
+ * Référentiel logistique d'une variante (mode démonstration). Rejoue les
+ * mêmes validations que la fonction serveur `set_variant_logistics` : aucune
+ * valeur aberrante n'est acceptée, et aucune correction n'est silencieuse.
+ */
+export function setVariantLogisticsM(
+  db: Database,
+  variantId: string,
+  logistics: VariantLogistics,
+): void {
+  const variant = db.productVariants.find((v) => v.id === variantId);
+  if (!variant) throw new BusinessError("Variante introuvable.");
+
+  const check = (
+    value: number | undefined,
+    min: number,
+    max: number,
+    message: string,
+  ) => {
+    if (value !== undefined && (!Number.isFinite(value) || value < min || value > max)) {
+      throw new BusinessError(message);
+    }
+  };
+  check(logistics.weightGrams, 1, 2_000_000,
+    "Poids invalide : indiquez une valeur en grammes entre 1 et 2 000 000.");
+  check(logistics.packedLengthMm, 1, 10_000,
+    "Dimension invalide : indiquez des millimètres entre 1 et 10 000.");
+  check(logistics.packedWidthMm, 1, 10_000,
+    "Dimension invalide : indiquez des millimètres entre 1 et 10 000.");
+  check(logistics.packedHeightMm, 1, 10_000,
+    "Dimension invalide : indiquez des millimètres entre 1 et 10 000.");
+  check(logistics.packageCount, 1, 50, "Nombre de colis invalide : entre 1 et 50.");
+  check(logistics.recommendedHandlers, 1, 4,
+    "Nombre de livreurs conseillé invalide : entre 1 et 4.");
+
+  const merged: VariantLogistics = { ...(variant.logistics ?? {}), ...logistics };
+  // Volume calculé dès que les trois dimensions emballées sont connues.
+  if (merged.packedLengthMm && merged.packedWidthMm && merged.packedHeightMm) {
+    merged.volumeCm3 = Math.floor(
+      (merged.packedLengthMm * merged.packedWidthMm * merged.packedHeightMm) / 1000,
+    );
+  }
+  merged.verifiedAt = new Date().toISOString();
+  variant.logistics = merged;
+
+  logActivity(db, {
+    actor: "Équipe logistique",
+    action: "Référentiel logistique mis à jour",
+    details: `${variant.name} — caractéristiques logistiques enregistrées.`,
+  });
+}
 
 export function updateLineStatusM(
   db: Database,

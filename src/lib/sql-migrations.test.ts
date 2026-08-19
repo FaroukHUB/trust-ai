@@ -21,16 +21,86 @@ describe("Migrations SQL", () => {
   });
 
   it("chaque table métier du schéma public a la RLS activée", () => {
+    // Les tables sont créées soit directement, soit avec « if not exists »
+    // (migrations rejouables) : les deux formes doivent être couvertes.
     const created = [
-      ...allSql.matchAll(/create table public\.([a-z_]+)/g),
+      ...allSql.matchAll(/create table (?:if not exists )?public\.([a-z_]+)/g),
     ].map((m) => m[1]);
     expect(created.length).toBeGreaterThanOrEqual(18);
-    for (const table of created) {
-      expect(
-        allSql.includes(`alter table public.${table} enable row level security`),
-        `RLS manquante pour public.${table}`,
-      ).toBe(true);
+
+    // Certaines migrations activent la RLS par une boucle sur un tableau de
+    // noms : ces tables-là sont tout aussi couvertes qu'avec un ordre
+    // littéral. On collecte donc les deux formes.
+    const loopCovered = new Set<string>();
+    for (const block of allSql.matchAll(
+      /foreach\s+\w+\s+in\s+array\s+array\[([\s\S]*?)\]([\s\S]*?)end\s*\$\$/g,
+    )) {
+      if (!block[2].includes("enable row level security")) continue;
+      for (const name of block[1].matchAll(/'([a-z_]+)'/g)) {
+        loopCovered.add(name[1]);
+      }
     }
+
+    for (const table of created) {
+      const covered =
+        allSql.includes(`alter table public.${table} enable row level security`) ||
+        loopCovered.has(table);
+      expect(covered, `RLS manquante pour public.${table}`).toBe(true);
+    }
+  });
+
+  it("les 13 tables du socle logistique existent et n'accordent aucun droit direct", () => {
+    const logistiques = [
+      "recap_sources", "recap_reads", "logistics_lines", "logistics_line_events",
+      "delivery_jobs", "delivery_allocations", "skara_documents",
+      "skara_document_extractions", "skara_document_corrections",
+      "match_candidates", "logistics_anomalies", "sync_events",
+      "sensitive_access_logs",
+    ];
+    expect(logistiques).toHaveLength(13);
+
+    // Le tableau de révocation doit couvrir EXACTEMENT ces 13 tables. On
+    // découpe tous les blocs de boucle, puis on retient celui qui révoque.
+    const revokeBlock = [
+      ...allSql.matchAll(
+        /foreach\s+\w+\s+in\s+array\s+array\[([\s\S]*?)\]([\s\S]*?)end\s*\$\$/g,
+      ),
+    ].find((block) => block[2].includes("revoke all on public"));
+    expect(revokeBlock, "bloc de révocation des droits directs introuvable").toBeDefined();
+    const revoked = [...revokeBlock![1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+    for (const table of logistiques) {
+      expect(allSql.includes(`create table if not exists public.${table}`), table).toBe(true);
+      expect(revoked.includes(table), `droits directs non révoqués : ${table}`).toBe(true);
+    }
+    expect(revoked.sort()).toEqual([...logistiques].sort());
+  });
+
+  it("chaque RPC logistique retire EXECUTE à public et anon", () => {
+    for (const fn of [
+      "logistics_summary",
+      "set_variant_logistics",
+      "allocate_to_delivery_job",
+      "get_delivery_job",
+    ]) {
+      expect(allSql.includes(`public.${fn}`), `RPC ${fn} absente`).toBe(true);
+    }
+    // Révocation générique par boucle sur les signatures.
+    expect(allSql.includes("revoke all on function %s from public")).toBe(true);
+    expect(allSql.includes("revoke all on function %s from anon")).toBe(true);
+    expect(allSql.includes("grant execute on function %s to authenticated")).toBe(true);
+  });
+
+  it("les fonctions du socle logistique verrouillent leur search_path", () => {
+    const migration = fs.readFileSync(
+      path.join(migrationsDir, "20260819000900_socle_logistique.sql"),
+      "utf8",
+    );
+    // Uniquement les DÉCLARATIONS (en début de ligne) : les mentions en
+    // commentaire ne doivent pas fausser le comptage.
+    const definers = migration.match(/^security definer$/gm) ?? [];
+    const searchPaths = migration.match(/^set search_path = ''$/gm) ?? [];
+    expect(definers.length).toBeGreaterThanOrEqual(4);
+    expect(searchPaths.length).toBeGreaterThanOrEqual(definers.length);
   });
 
   it("les entités demandées existent toutes", () => {

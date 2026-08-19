@@ -226,10 +226,52 @@ export interface ProductVariant {
   sku: string;
   barcode?: string;
   color?: string;
+  /** Libellé COMMERCIAL des dimensions (issu du catalogue ou de Shopify). */
   dimensions?: string;
   /** Prix de vente TTC en euros. */
   price: number;
   shopifyVariantId?: string;
+  /**
+   * Référentiel LOGISTIQUE (phase 1) : caractéristiques de l'article
+   * emballé, utilisées par la future planification des tournées. Écrites
+   * uniquement par la fonction serveur `set_variant_logistics` en mode
+   * connecté — jamais par une mise à jour directe depuis le navigateur.
+   */
+  logistics?: VariantLogistics;
+}
+
+/**
+ * Compteurs du module logistique (phase 1). Servis par la fonction serveur
+ * `logistics_summary()`, cloisonnée par organisation : aucune table
+ * logistique n'est lisible directement depuis le navigateur.
+ */
+export interface LogisticsSummary {
+  lignesTotal: number;
+  lignesDisponibles: number;
+  dossiersTotal: number;
+  dossiersAContacter: number;
+  anomaliesOuvertes: number;
+  documentsAVerifier: number;
+}
+
+/** Caractéristiques logistiques d'une variante (toutes facultatives). */
+export interface VariantLogistics {
+  /** Poids de l'article emballé, en grammes. */
+  weightGrams?: number;
+  /** Dimensions EMBALLÉES, en millimètres. */
+  packedLengthMm?: number;
+  packedWidthMm?: number;
+  packedHeightMm?: number;
+  /** Volume en cm³ (calculé côté serveur si les 3 dimensions sont fournies). */
+  volumeCm3?: number;
+  packageCount?: number;
+  fragile?: boolean;
+  requiresInstallation?: boolean;
+  /** Nombre de livreurs conseillé (1 à 4). */
+  recommendedHandlers?: number;
+  handlingNotes?: string;
+  verifiedAt?: string;
+  verifiedBy?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -541,7 +583,10 @@ export type Role =
   | "logistique"
   | "comptabilite"
   | "direction"
-  | "administrateur";
+  | "administrateur"
+  // Phase 1 — socle logistique.
+  | "responsable_logistique"
+  | "livreur";
 
 export type Permission =
   | "creer_commande"
@@ -554,7 +599,15 @@ export type Permission =
   | "gerer_catalogue"
   | "produit_hors_catalogue"
   | "voir_tous_magasins"
-  | "administrer";
+  | "administrer"
+  // Phase 1 — socle logistique (7 permissions).
+  | "gerer_livraisons"
+  | "importer_recap"
+  | "gerer_documents_client"
+  | "voir_coordonnees_client"
+  | "voir_montants_livraison"
+  | "executer_livraison"
+  | "gerer_referentiel_logistique";
 
 /**
  * Profil employé. À la phase Supabase Auth, `authUserId` pointera vers
@@ -591,10 +644,31 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "gerer_encaissements",
     "voir_acquisition",
     "produit_hors_catalogue",
+    "voir_coordonnees_client",
   ],
-  achats: ["gerer_achats", "valider_decision", "gerer_catalogue"],
-  logistique: ["gerer_logistique"],
-  comptabilite: ["gerer_encaissements"],
+  achats: [
+    "gerer_achats",
+    "valider_decision",
+    "gerer_catalogue",
+    "gerer_referentiel_logistique",
+  ],
+  logistique: ["gerer_logistique", "gerer_livraisons", "voir_coordonnees_client"],
+  comptabilite: ["gerer_encaissements", "voir_montants_livraison"],
+  // Phase 1 : pilote du module logistique.
+  responsable_logistique: [
+    "gerer_logistique",
+    "gerer_livraisons",
+    "importer_recap",
+    "gerer_documents_client",
+    "voir_coordonnees_client",
+    "voir_montants_livraison",
+    "executer_livraison",
+    "gerer_referentiel_logistique",
+    "valider_decision",
+  ],
+  // Phase 1 : AUCUNE permission (décision E18). Les droits du livreur seront
+  // ouverts en phase 6, avec la relation livreur ↔ passage et ses tests RLS.
+  livreur: [],
   direction: [
     "creer_commande",
     "encaisser_reglement",
@@ -606,6 +680,13 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "gerer_catalogue",
     "produit_hors_catalogue",
     "voir_tous_magasins",
+    "gerer_livraisons",
+    "importer_recap",
+    "gerer_documents_client",
+    "voir_coordonnees_client",
+    "voir_montants_livraison",
+    "executer_livraison",
+    "gerer_referentiel_logistique",
   ],
   administrateur: [
     "creer_commande",
@@ -619,6 +700,13 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "produit_hors_catalogue",
     "voir_tous_magasins",
     "administrer",
+    "gerer_livraisons",
+    "importer_recap",
+    "gerer_documents_client",
+    "voir_coordonnees_client",
+    "voir_montants_livraison",
+    "executer_livraison",
+    "gerer_referentiel_logistique",
   ],
 };
 

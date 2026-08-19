@@ -1,9 +1,34 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { canAccessPage, canAccessStore, hasPermission } from "./permissions";
+import {
+  ARCHIVED_PAGES,
+  canAccessPage,
+  canAccessStore,
+  hasPermission,
+  isInMainNav,
+} from "./permissions";
 import { ROLE_PERMISSIONS } from "./types";
 import type { Role, UserProfile } from "./types";
+
+/**
+ * Contenu de la DERNIÈRE définition de `app.role_permissions` : les
+ * migrations la redéfinissent (`create or replace`), seule la plus récente
+ * s'applique réellement en base.
+ */
+function latestRolePermissionsSql(): string {
+  const dir = path.join(process.cwd(), "supabase/migrations");
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
+  let latest: string | null = null;
+  for (const file of files) {
+    const content = fs.readFileSync(path.join(dir, file), "utf8");
+    if (content.includes("create or replace function app.role_permissions")) {
+      latest = content;
+    }
+  }
+  if (!latest) throw new Error("Aucune définition SQL de app.role_permissions trouvée.");
+  return latest;
+}
 
 function profileWith(role: Role, stores: string[] = []): UserProfile {
   return {
@@ -52,10 +77,9 @@ describe("Matrice de permissions (miroir de la fonction SQL app.role_permissions
   });
 
   it("la matrice TS et la matrice SQL restent synchronisées", () => {
-    const sql = fs.readFileSync(
-      path.join(process.cwd(), "supabase/migrations/20260812000200_rls_policies.sql"),
-      "utf8",
-    );
+    // La matrice est redéfinie par les migrations successives : on compare
+    // avec la DERNIÈRE définition, celle qui est réellement en vigueur.
+    const sql = latestRolePermissionsSql();
     for (const [role, permissions] of Object.entries(ROLE_PERMISSIONS)) {
       const block = sql.match(
         new RegExp(`when '${role}' then array\\[([\\s\\S]*?)\\]`),
@@ -68,5 +92,63 @@ describe("Matrice de permissions (miroir de la fonction SQL app.role_permissions
         ).toBe(true);
       }
     }
+  });
+});
+
+describe("Socle logistique (phase 1)", () => {
+  it("compte exactement 9 rôles et 18 permissions", () => {
+    const roles = Object.keys(ROLE_PERMISSIONS);
+    expect(roles).toHaveLength(9);
+    expect(roles).toContain("responsable_logistique");
+    expect(roles).toContain("livreur");
+    const permissions = new Set(Object.values(ROLE_PERMISSIONS).flat());
+    expect(permissions.size).toBe(18);
+  });
+
+  it("le livreur ne détient AUCUNE permission en phase 1 (décision E18)", () => {
+    expect(ROLE_PERMISSIONS.livreur).toEqual([]);
+    const sensibles = [
+      "gerer_livraisons",
+      "voir_coordonnees_client",
+      "voir_montants_livraison",
+      "executer_livraison",
+      "gerer_documents_client",
+    ] as const;
+    for (const permission of sensibles) {
+      expect(hasPermission("livreur", permission)).toBe(false);
+    }
+    // Et il n'atteint aucune page du module.
+    expect(canAccessPage("livreur", "/logistique")).toBe(false);
+    expect(canAccessPage("livreur", "/commandes")).toBe(false);
+  });
+
+  it("le responsable logistique pilote le module sans toucher au commercial", () => {
+    expect(hasPermission("responsable_logistique", "gerer_livraisons")).toBe(true);
+    expect(hasPermission("responsable_logistique", "importer_recap")).toBe(true);
+    expect(hasPermission("responsable_logistique", "gerer_documents_client")).toBe(true);
+    expect(canAccessPage("responsable_logistique", "/logistique")).toBe(true);
+    // Aucun droit commercial ni administratif.
+    expect(hasPermission("responsable_logistique", "creer_commande")).toBe(false);
+    expect(hasPermission("responsable_logistique", "gerer_encaissements")).toBe(false);
+    expect(hasPermission("responsable_logistique", "administrer")).toBe(false);
+  });
+
+  it("les montants de livraison ne sont pas visibles par défaut", () => {
+    expect(hasPermission("logistique", "voir_montants_livraison")).toBe(false);
+    expect(hasPermission("logistique", "voir_coordonnees_client")).toBe(true);
+    expect(hasPermission("vendeur", "voir_coordonnees_client")).toBe(false);
+  });
+
+  it("les modules commerciaux sortent du menu mais restent accessibles", () => {
+    for (const href of ["/achats", "/relances", "/encaissements", "/acquisition"]) {
+      expect(isInMainNav("administrateur", href), `${href} ne doit plus être au menu`).toBe(false);
+    }
+    // Accessibles malgré tout (aucune page supprimée, aucune URL cassée).
+    expect(canAccessPage("achats", "/achats")).toBe(true);
+    expect(canAccessPage("comptabilite", "/encaissements")).toBe(true);
+    expect(ARCHIVED_PAGES.length).toBe(4);
+    // Le menu principal conserve la logistique et le référentiel produits.
+    expect(isInMainNav("responsable_logistique", "/logistique")).toBe(true);
+    expect(isInMainNav("achats", "/catalogue")).toBe(true);
   });
 });

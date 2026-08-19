@@ -8,6 +8,7 @@ import type {
   Database,
   DeliveryStatus,
   FulfillmentMode,
+  LogisticsSummary,
   OrderOrigin,
   OrderStatus,
   PaymentMethod,
@@ -21,6 +22,7 @@ import type {
   SupplierLogistics,
   SupplierOrderStatus,
   TransportMode,
+  VariantLogistics,
 } from "../types";
 
 /**
@@ -181,6 +183,22 @@ export class SupabaseRepository {
         dimensions: v.dimensions ?? undefined,
         price: fromCents(v.price_cents),
         shopifyVariantId: v.shopify_variant_id ?? undefined,
+        // Référentiel logistique (phase 1) : lecture seule ici, écriture par
+        // la fonction serveur set_variant_logistics uniquement.
+        logistics: {
+          weightGrams: v.weight_grams ?? undefined,
+          packedLengthMm: v.packed_length_mm ?? undefined,
+          packedWidthMm: v.packed_width_mm ?? undefined,
+          packedHeightMm: v.packed_height_mm ?? undefined,
+          volumeCm3: v.volume_cm3 ?? undefined,
+          packageCount: v.package_count ?? undefined,
+          fragile: v.fragile ?? undefined,
+          requiresInstallation: v.requires_installation ?? undefined,
+          recommendedHandlers: v.recommended_handlers ?? undefined,
+          handlingNotes: v.handling_notes ?? undefined,
+          verifiedAt: v.logistics_verified_at ?? undefined,
+          verifiedBy: v.logistics_verified_by ?? undefined,
+        },
       })),
       suppliers: suppliers.map((s) => ({
         id: s.id,
@@ -530,6 +548,55 @@ export class SupabaseRepository {
         item_id: r.itemId,
         quantity_received: r.quantityReceived,
       })),
+    });
+    throwAsBusiness(error);
+  }
+
+  // -------------------------------------------------------------------------
+  // Socle logistique (phase 1)
+  // -------------------------------------------------------------------------
+  // Les 13 tables logistiques n'accordent AUCUN droit direct : tout passe par
+  // des fonctions serveur qui vérifient permission et organisation.
+
+  /** Compteurs du module logistique (cloisonnés par organisation). */
+  async logisticsSummary(): Promise<LogisticsSummary> {
+    const { data, error } = await this.supabase.rpc("logistics_summary");
+    throwAsBusiness(error);
+    const row = (data ?? {}) as Record<string, number>;
+    return {
+      lignesTotal: Number(row.lignes_total ?? 0),
+      lignesDisponibles: Number(row.lignes_disponibles ?? 0),
+      dossiersTotal: Number(row.dossiers_total ?? 0),
+      dossiersAContacter: Number(row.dossiers_a_contacter ?? 0),
+      anomaliesOuvertes: Number(row.anomalies_ouvertes ?? 0),
+      documentsAVerifier: Number(row.documents_a_verifier ?? 0),
+    };
+  }
+
+  /** Référentiel logistique d'une variante (validation côté serveur). */
+  async setVariantLogistics(
+    variantId: string,
+    logistics: VariantLogistics,
+  ): Promise<void> {
+    const payload: Record<string, unknown> = {};
+    if (logistics.weightGrams !== undefined) payload.weight_grams = logistics.weightGrams;
+    if (logistics.packedLengthMm !== undefined) payload.packed_length_mm = logistics.packedLengthMm;
+    if (logistics.packedWidthMm !== undefined) payload.packed_width_mm = logistics.packedWidthMm;
+    if (logistics.packedHeightMm !== undefined) payload.packed_height_mm = logistics.packedHeightMm;
+    if (logistics.volumeCm3 !== undefined) payload.volume_cm3 = logistics.volumeCm3;
+    if (logistics.packageCount !== undefined) payload.package_count = logistics.packageCount;
+    if (logistics.fragile !== undefined) payload.fragile = logistics.fragile;
+    if (logistics.requiresInstallation !== undefined) {
+      payload.requires_installation = logistics.requiresInstallation;
+    }
+    if (logistics.recommendedHandlers !== undefined) {
+      payload.recommended_handlers = logistics.recommendedHandlers;
+    }
+    if (logistics.handlingNotes !== undefined) payload.handling_notes = logistics.handlingNotes;
+
+    const { error } = await this.supabase.rpc("set_variant_logistics", {
+      p_variant_id: variantId,
+      p_payload: payload,
     });
     throwAsBusiness(error);
   }
