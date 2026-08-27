@@ -55,7 +55,7 @@ function matchesView(order: Order, db: Database, view: ViewKey): boolean {
 }
 
 export default function OrdersPage() {
-  const { db, storeFilter } = useData();
+  const { db, mode, storeFilter } = useData();
   const [tab, setTab] = useState<Tab>("toutes");
   const [view, setView] = useState<ViewKey>("toutes");
   const [period, setPeriod] = useState<PeriodValue>({ key: "toutes" });
@@ -127,10 +127,13 @@ export default function OrdersPage() {
             Commandes Shopify et magasin, avec suivi article par article.
           </p>
         </div>
-        <Link href="/commandes/nouvelle-magasin" className="btn-primary">
-          <Plus size={16} aria-hidden />
-          Nouvelle commande magasin
-        </Link>
+        {/* Voir le tableau de bord : création réservée au mode démonstration. */}
+        {mode === "demo" ? (
+          <Link href="/commandes/nouvelle-magasin" className="btn-primary">
+            <Plus size={16} aria-hidden />
+            Nouvelle commande magasin
+          </Link>
+        ) : null}
       </div>
 
       <div className="flex flex-wrap items-center gap-3">

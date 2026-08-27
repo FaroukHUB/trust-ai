@@ -208,6 +208,35 @@ export const roleLabels: Record<Role, string> = {
   achats: "Achats",
   logistique: "Logistique",
   comptabilite: "Comptabilité",
+  responsable_logistique: "Responsable logistique",
+  livreur: "Livreur",
   direction: "Direction",
   administrateur: "Administrateur",
+};
+
+/**
+ * Étapes d'une ligne du récapitulatif (phase 2). L'étape décrit OÙ se trouve
+ * la marchandise ; les retards et les anomalies sont suivis séparément.
+ */
+/**
+ * Les trois façons de servir un client, telles que le récapitulatif les
+ * distingue. Elles sont exclusives : une ligne servie par l'une n'est plus
+ * disponible pour les autres.
+ */
+export const exitChannelLabels: Record<string, { label: string; tone: BadgeTone }> = {
+  paris: { label: "Servi par Paris", tone: "info" },
+  livraison_aubagne: { label: "Livré depuis Aubagne", tone: "info" },
+  retrait_aubagne: { label: "Retiré à Aubagne", tone: "neutral" },
+};
+
+export const logisticsStageLabels: Record<string, { label: string; tone: BadgeTone }> = {
+  a_commander: { label: "À commander", tone: "warning" },
+  commandee: { label: "Commandée", tone: "info" },
+  attendue: { label: "Attendue", tone: "info" },
+  recue_argenteuil: { label: "Reçue à Argenteuil", tone: "info" },
+  en_transfert: { label: "En transfert vers Aubagne", tone: "info" },
+  recue_aubagne: { label: "Reçue à Aubagne", tone: "info" },
+  disponible: { label: "Disponible", tone: "success" },
+  sortie: { label: "Sortie", tone: "neutral" },
+  annulee: { label: "Annulée", tone: "neutral" },
 };

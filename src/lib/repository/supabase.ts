@@ -8,7 +8,14 @@ import type {
   Database,
   DeliveryStatus,
   FulfillmentMode,
+  LogisticsLineDetail,
+  LogisticsLineFilters,
+  LogisticsLinePage,
+  LogisticsLineRow,
+  LogisticsSummary,
   OrderOrigin,
+  RecapSource,
+  RecapSourceInput,
   OrderStatus,
   PaymentMethod,
   ProcurementStatus,
@@ -21,6 +28,7 @@ import type {
   SupplierLogistics,
   SupplierOrderStatus,
   TransportMode,
+  VariantLogistics,
 } from "../types";
 
 /**
@@ -181,6 +189,22 @@ export class SupabaseRepository {
         dimensions: v.dimensions ?? undefined,
         price: fromCents(v.price_cents),
         shopifyVariantId: v.shopify_variant_id ?? undefined,
+        // Référentiel logistique (phase 1) : lecture seule ici, écriture par
+        // la fonction serveur set_variant_logistics uniquement.
+        logistics: {
+          weightGrams: v.weight_grams ?? undefined,
+          packedLengthMm: v.packed_length_mm ?? undefined,
+          packedWidthMm: v.packed_width_mm ?? undefined,
+          packedHeightMm: v.packed_height_mm ?? undefined,
+          volumeCm3: v.volume_cm3 ?? undefined,
+          packageCount: v.package_count ?? undefined,
+          fragile: v.fragile ?? undefined,
+          requiresInstallation: v.requires_installation ?? undefined,
+          recommendedHandlers: v.recommended_handlers ?? undefined,
+          handlingNotes: v.handling_notes ?? undefined,
+          verifiedAt: v.logistics_verified_at ?? undefined,
+          verifiedBy: v.logistics_verified_by ?? undefined,
+        },
       })),
       suppliers: suppliers.map((s) => ({
         id: s.id,
@@ -530,6 +554,153 @@ export class SupabaseRepository {
         item_id: r.itemId,
         quantity_received: r.quantityReceived,
       })),
+    });
+    throwAsBusiness(error);
+  }
+
+  // -------------------------------------------------------------------------
+  // Socle logistique (phase 1)
+  // -------------------------------------------------------------------------
+  // Les 13 tables logistiques n'accordent AUCUN droit direct : tout passe par
+  // des fonctions serveur qui vérifient permission et organisation.
+
+  /** Compteurs du module logistique (cloisonnés par organisation). */
+  async logisticsSummary(): Promise<LogisticsSummary> {
+    const { data, error } = await this.supabase.rpc("logistics_summary");
+    throwAsBusiness(error);
+    const row = (data ?? {}) as Record<string, number>;
+    return {
+      lignesTotal: Number(row.lignes_total ?? 0),
+      lignesDisponibles: Number(row.lignes_disponibles ?? 0),
+      dossiersTotal: Number(row.dossiers_total ?? 0),
+      dossiersAContacter: Number(row.dossiers_a_contacter ?? 0),
+      anomaliesOuvertes: Number(row.anomalies_ouvertes ?? 0),
+      documentsAVerifier: Number(row.documents_a_verifier ?? 0),
+    };
+  }
+
+  // --- Récapitulatif Google Sheets (phase 2) -------------------------------
+
+  /** Onglets configurés du récapitulatif (liste vide si rien n'est branché). */
+  async listRecapSources(): Promise<RecapSource[]> {
+    const { data, error } = await this.supabase.rpc("list_recap_sources");
+    throwAsBusiness(error);
+    const rows = (data ?? []) as Record<string, unknown>[];
+    return rows.map((row) => {
+      const last = (row.last_read ?? null) as Record<string, unknown> | null;
+      return {
+        id: String(row.id),
+        label: String(row.label ?? ""),
+        spreadsheetId: (row.spreadsheet_id as string) ?? "",
+        sheetName: (row.sheet_name as string) ?? "",
+        headerRow: Number(row.header_row ?? 1),
+        idColumn: (row.id_column as string) ?? undefined,
+        columnMapping: (row.column_mapping ?? {}) as Record<string, string>,
+        clientCarriers: (row.client_carriers ?? []) as string[],
+        active: row.active !== false,
+        linesCount: Number(row.lines_count ?? 0),
+        lastReadAt: (row.last_read_at as string) ?? undefined,
+        lastReadStatus: (row.last_read_status as string) ?? undefined,
+        lastRead: last
+          ? {
+              startedAt: String(last.started_at ?? ""),
+              finishedAt: (last.finished_at as string) ?? undefined,
+              rowsRead: Number(last.rows_read ?? 0),
+              rowsCreated: Number(last.rows_created ?? 0),
+              rowsUpdated: Number(last.rows_updated ?? 0),
+              rowsIgnored: Number(last.rows_ignored ?? 0),
+              errorsCount: Number(last.errors_count ?? 0),
+              report: (last.report ?? {}) as Record<string, number>,
+            }
+          : undefined,
+      };
+    });
+  }
+
+  /** Crée ou met à jour un onglet (permission « importer_recap »). */
+  async upsertRecapSource(input: RecapSourceInput): Promise<void> {
+    const { error } = await this.supabase.rpc("upsert_recap_source", {
+      p_payload: {
+        id: input.id ?? null,
+        label: input.label,
+        spreadsheet_id: input.spreadsheetId,
+        sheet_name: input.sheetName,
+        header_row: input.headerRow,
+        id_column: input.idColumn ?? null,
+        column_mapping: input.columnMapping,
+        client_carriers: input.clientCarriers,
+      },
+    });
+    throwAsBusiness(error);
+  }
+
+  /**
+   * Met un onglet en sommeil (ou le réveille).
+   * Aucune ligne n'est supprimée : elles perdraient leur historique.
+   */
+  async setRecapSourceActive(sourceId: string, active: boolean): Promise<void> {
+    const { error } = await this.supabase.rpc("set_recap_source_active", {
+      p_source_id: sourceId,
+      p_active: active,
+    });
+    throwAsBusiness(error);
+  }
+
+  /** Lignes logistiques paginées et filtrées (aucun accès direct aux tables). */
+  async listLogisticsLines(filters: LogisticsLineFilters): Promise<LogisticsLinePage> {
+    const { data, error } = await this.supabase.rpc("list_logistics_lines", {
+      p_search: filters.search ?? null,
+      p_stage: filters.stage ?? null,
+      p_supplier: filters.supplier ?? null,
+      p_warehouse_id: filters.warehouseId ?? null,
+      p_only_anomalies: filters.onlyAnomalies ?? false,
+      p_limit: filters.limit ?? 50,
+      p_offset: filters.offset ?? 0,
+      p_source_id: filters.sourceId ?? null,
+      p_exit_channel: filters.exitChannel ?? null,
+    });
+    throwAsBusiness(error);
+    const row = (data ?? {}) as { total?: number; rows?: unknown[] };
+    return {
+      total: Number(row.total ?? 0),
+      rows: (row.rows ?? []) as LogisticsLineRow[],
+    };
+  }
+
+  /** Détail d'une ligne : historique des événements et anomalies. */
+  async getLogisticsLine(lineId: string): Promise<LogisticsLineDetail> {
+    const { data, error } = await this.supabase.rpc("get_logistics_line", {
+      p_line_id: lineId,
+    });
+    throwAsBusiness(error);
+    return (data ?? { line: null, events: [], anomalies: [] }) as LogisticsLineDetail;
+  }
+
+  /** Référentiel logistique d'une variante (validation côté serveur). */
+  async setVariantLogistics(
+    variantId: string,
+    logistics: VariantLogistics,
+  ): Promise<void> {
+    // Un champ ABSENT n'est pas transmis (valeur conservée) ; un champ à
+    // `null` EST transmis pour effacer la caractéristique côté serveur.
+    const payload: Record<string, unknown> = {};
+    const put = (key: string, value: number | boolean | string | null | undefined) => {
+      if (value !== undefined) payload[key] = value;
+    };
+    put("weight_grams", logistics.weightGrams);
+    put("packed_length_mm", logistics.packedLengthMm);
+    put("packed_width_mm", logistics.packedWidthMm);
+    put("packed_height_mm", logistics.packedHeightMm);
+    put("volume_cm3", logistics.volumeCm3);
+    put("package_count", logistics.packageCount);
+    put("fragile", logistics.fragile);
+    put("requires_installation", logistics.requiresInstallation);
+    put("recommended_handlers", logistics.recommendedHandlers);
+    put("handling_notes", logistics.handlingNotes);
+
+    const { error } = await this.supabase.rpc("set_variant_logistics", {
+      p_variant_id: variantId,
+      p_payload: payload,
     });
     throwAsBusiness(error);
   }

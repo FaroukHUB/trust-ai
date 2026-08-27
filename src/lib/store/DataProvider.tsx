@@ -15,6 +15,7 @@ import { SupabaseRepository } from "../repository/supabase";
 import { todayIso } from "../format";
 import { useSession } from "../auth/SessionProvider";
 import {
+  BusinessError,
   addPaymentM,
   createStoreOrderM,
   decideApprovalM,
@@ -22,13 +23,24 @@ import {
   prepareSupplierOrderM,
   receiveShipmentM,
   requestOrderCancellationM,
+  setVariantLogisticsM,
   updateLineStatusM,
   type DecideApprovalOptions,
   type NewStoreOrderInput,
   type PaymentInput,
 } from "../mutations";
 import type { AppMode } from "../config";
-import type { Database, ProcurementStatus } from "../types";
+import type {
+  Database,
+  LogisticsLineDetail,
+  LogisticsLineFilters,
+  LogisticsLinePage,
+  LogisticsSummary,
+  ProcurementStatus,
+  RecapSource,
+  RecapSourceInput,
+  VariantLogistics,
+} from "../types";
 
 export type { NewStoreOrderInput, NewOrderLineInput, PaymentInput } from "../mutations";
 export { BusinessError } from "../mutations";
@@ -86,6 +98,19 @@ interface DataContextValue {
     shipmentId: string,
     receipts: { itemId: string; quantityReceived: number }[],
   ) => Promise<void>;
+  /** Compteurs du module logistique (mode connecté : RPC serveur). */
+  logisticsSummary: () => Promise<LogisticsSummary>;
+  /** Référentiel logistique d'une variante (validation côté serveur). */
+  setVariantLogistics: (
+    variantId: string,
+    logistics: VariantLogistics,
+  ) => Promise<void>;
+  /** Configuration du récapitulatif Google Sheets (phase 2). */
+  listRecapSources: () => Promise<RecapSource[]>;
+  saveRecapSource: (input: RecapSourceInput) => Promise<void>;
+  setRecapSourceActive: (sourceId: string, active: boolean) => Promise<void>;
+  listLogisticsLines: (filters: LogisticsLineFilters) => Promise<LogisticsLinePage>;
+  getLogisticsLine: (lineId: string) => Promise<LogisticsLineDetail>;
   resetDemo: () => void;
 }
 
@@ -254,6 +279,79 @@ export function DataProvider({ children }: { children: ReactNode }) {
     [remote, refresh, applyLocal],
   );
 
+  // --- Socle logistique (phase 1) -----------------------------------------
+  const logisticsSummary = useCallback(async (): Promise<LogisticsSummary> => {
+    if (remote) return remote.logisticsSummary();
+    // Mode démonstration : le module logistique s'appuie sur la base
+    // partagée ; aucun compteur simulé n'est inventé.
+    return {
+      lignesTotal: 0,
+      lignesDisponibles: 0,
+      dossiersTotal: 0,
+      dossiersAContacter: 0,
+      anomaliesOuvertes: 0,
+      documentsAVerifier: 0,
+    };
+  }, [remote]);
+
+  const setVariantLogistics = useCallback(
+    async (variantId: string, logistics: VariantLogistics) => {
+      if (remote) {
+        await remote.setVariantLogistics(variantId, logistics);
+        await refresh();
+        return;
+      }
+      applyLocal((d) => setVariantLogisticsM(d, variantId, logistics));
+    },
+    [remote, refresh, applyLocal],
+  );
+
+  const listRecapSources = useCallback(async (): Promise<RecapSource[]> => {
+    // Mode démonstration : la connexion au récapitulatif s'appuie sur la base
+    // partagée ; aucune configuration fictive n'est inventée.
+    return remote ? remote.listRecapSources() : [];
+  }, [remote]);
+
+  const saveRecapSource = useCallback(
+    async (input: RecapSourceInput) => {
+      if (!remote) {
+        throw new BusinessError(
+          "La connexion au récapitulatif n'est disponible qu'en mode connecté.",
+        );
+      }
+      await remote.upsertRecapSource(input);
+    },
+    [remote],
+  );
+
+  const setRecapSourceActive = useCallback(
+    async (sourceId: string, active: boolean) => {
+      if (!remote) {
+        throw new BusinessError(
+          "La connexion au récapitulatif n'est disponible qu'en mode connecté.",
+        );
+      }
+      await remote.setRecapSourceActive(sourceId, active);
+    },
+    [remote],
+  );
+
+  const listLogisticsLines = useCallback(
+    async (filters: LogisticsLineFilters): Promise<LogisticsLinePage> => {
+      if (!remote) return { total: 0, rows: [] };
+      return remote.listLogisticsLines(filters);
+    },
+    [remote],
+  );
+
+  const getLogisticsLine = useCallback(
+    async (lineId: string): Promise<LogisticsLineDetail> => {
+      if (!remote) return { line: null, events: [], anomalies: [] };
+      return remote.getLogisticsLine(lineId);
+    },
+    [remote],
+  );
+
   const receiveShipment = useCallback(
     async (
       shipmentId: string,
@@ -292,6 +390,13 @@ export function DataProvider({ children }: { children: ReactNode }) {
       requestOrderCancellation,
       updateLineStatus,
       receiveShipment,
+      logisticsSummary,
+      setVariantLogistics,
+      listRecapSources,
+      saveRecapSource,
+      setRecapSourceActive,
+      listLogisticsLines,
+      getLogisticsLine,
       resetDemo,
     }),
     [
@@ -308,6 +413,13 @@ export function DataProvider({ children }: { children: ReactNode }) {
       requestOrderCancellation,
       updateLineStatus,
       receiveShipment,
+      logisticsSummary,
+      setVariantLogistics,
+      listRecapSources,
+      saveRecapSource,
+      setRecapSourceActive,
+      listLogisticsLines,
+      getLogisticsLine,
       resetDemo,
     ],
   );

@@ -31,7 +31,7 @@ import { formatDate, formatEuro, isToday } from "@/lib/format";
 import { deliveryStatusLabels, originLabels } from "@/lib/labels";
 
 export default function DashboardPage() {
-  const { db, storeFilter } = useData();
+  const { db, mode, storeFilter } = useData();
 
   if (!db) return <LoadingState />;
 
@@ -115,10 +115,14 @@ export default function DashboardPage() {
             Vue d&apos;ensemble des commandes, approvisionnements et encaissements.
           </p>
         </div>
-        <Link href="/commandes/nouvelle-magasin" className="btn-primary">
-          <Store size={16} aria-hidden />
-          Nouvelle commande magasin
-        </Link>
+        {/* Skara reste la source de création des commandes : le raccourci
+            n'existe plus qu'en mode démonstration. */}
+        {mode === "demo" ? (
+          <Link href="/commandes/nouvelle-magasin" className="btn-primary">
+            <Store size={16} aria-hidden />
+            Nouvelle commande magasin
+          </Link>
+        ) : null}
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">

@@ -27,6 +27,13 @@ reçues automatiquement par webhooks signés (HMAC), catalogue synchronisé
 page) — en lecture seule, sans jamais écraser le suivi d'approvisionnement
 saisi par l'équipe. Voir **docs/SHOPIFY_SETUP.md**.
 
+Le module **Logistique** pilote les marchandises à partir du **fichier
+récapitulatif Google Sheets**, lu en **lecture seule** côté serveur : arrivées,
+transfert Argenteuil → Aubagne, disponibilité, anomalies. Rien n'est demandé de
+plus aux vendeuses, et TRUST AI n'écrit jamais dans le fichier. Voir
+**docs/RECAP_GOOGLE_SHEETS.md** (parcours entièrement navigateur) et
+**docs/PHASE1_SOCLE_LOGISTIQUE.md** pour le socle de données.
+
 ## Démarrer
 
 ```bash

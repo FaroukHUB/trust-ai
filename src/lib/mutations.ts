@@ -9,6 +9,7 @@ import type {
   OrderLine,
   Payment,
   ProcurementStatus,
+  VariantLogistics,
 } from "./types";
 
 /**
@@ -619,6 +620,76 @@ export function receiveShipmentM(
 // ---------------------------------------------------------------------------
 // Divers
 // ---------------------------------------------------------------------------
+
+/**
+ * Référentiel logistique d'une variante (mode démonstration). Rejoue les
+ * mêmes validations que la fonction serveur `set_variant_logistics` : aucune
+ * valeur aberrante n'est acceptée, et aucune correction n'est silencieuse.
+ */
+export function setVariantLogisticsM(
+  db: Database,
+  variantId: string,
+  logistics: VariantLogistics,
+): void {
+  const variant = db.productVariants.find((v) => v.id === variantId);
+  if (!variant) throw new BusinessError("Variante introuvable.");
+
+  // `null` = effacement volontaire ; `undefined` = champ non transmis, donc
+  // valeur conservée. Un nombre décimal est REFUSÉ, jamais arrondi.
+  const check = (
+    value: number | null | undefined,
+    min: number,
+    max: number,
+    label: string,
+  ) => {
+    if (value === undefined || value === null) return;
+    if (!Number.isFinite(value)) {
+      throw new BusinessError(`${label} : valeur numérique attendue.`);
+    }
+    if (!Number.isInteger(value)) {
+      throw new BusinessError(
+        `${label} : nombre entier attendu (aucun arrondi automatique).`,
+      );
+    }
+    if (value < min || value > max) {
+      throw new BusinessError(
+        `${label} : valeur hors limites (attendu entre ${min} et ${max}).`,
+      );
+    }
+  };
+  check(logistics.weightGrams, 1, 2_000_000, "Poids (g)");
+  check(logistics.packedLengthMm, 1, 10_000, "Longueur emballée (mm)");
+  check(logistics.packedWidthMm, 1, 10_000, "Largeur emballée (mm)");
+  check(logistics.packedHeightMm, 1, 10_000, "Hauteur emballée (mm)");
+  check(logistics.packageCount, 1, 50, "Nombre de colis");
+  check(logistics.recommendedHandlers, 1, 4, "Livreurs conseillés");
+  check(logistics.volumeCm3, 1, 100_000_000, "Volume (cm³)");
+
+  // Fusion : seules les clés RÉELLEMENT transmises sont appliquées.
+  const merged: VariantLogistics = { ...(variant.logistics ?? {}) };
+  for (const [key, value] of Object.entries(logistics)) {
+    if (value === undefined) continue;
+    (merged as Record<string, unknown>)[key] = value === null ? undefined : value;
+  }
+  // Volume dérivé des dimensions FINALES : recalculé quand les trois sont
+  // connues, effacé si l'une d'elles a été vidée (sauf volume explicite).
+  if (logistics.volumeCm3 === undefined) {
+    merged.volumeCm3 =
+      merged.packedLengthMm && merged.packedWidthMm && merged.packedHeightMm
+        ? Math.floor(
+            (merged.packedLengthMm * merged.packedWidthMm * merged.packedHeightMm) / 1000,
+          )
+        : undefined;
+  }
+  merged.verifiedAt = new Date().toISOString();
+  variant.logistics = merged;
+
+  logActivity(db, {
+    actor: "Équipe logistique",
+    action: "Référentiel logistique mis à jour",
+    details: `${variant.name} — caractéristiques logistiques enregistrées.`,
+  });
+}
 
 export function updateLineStatusM(
   db: Database,
