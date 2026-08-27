@@ -23,14 +23,24 @@
  * navigateur, sans terminal).
  */
 
-/** Nom de l'onglet à surveiller. */
-var TRUST_SHEET_NAME = 'RECAP';
+/**
+ * Onglets à surveiller, et la ligne où se trouvent leurs titres.
+ *
+ * Le récapitulatif est organisé PAR ANNÉE : un onglet par exercice. Quand un
+ * nouvel onglet est créé en janvier, ajoutez-le simplement ici — c'est la
+ * seule modification à faire.
+ *
+ * `headerRow` est le numéro de la ligne des TITRES de colonnes. Dans le
+ * récapitulatif de Trust Industrie c'est la ligne 4 : trois lignes de
+ * bandeaux la précèdent.
+ */
+var TRUST_SHEETS = [
+  { name: 'INTERNET',    headerRow: 4 },
+  { name: 'SUIVIS 2025', headerRow: 4 },
+];
 
 /** Titre exact de la colonne d'identifiants. */
 var TRUST_ID_HEADER = 'ID TRUST';
-
-/** Numéro de la ligne contenant les titres de colonnes. */
-var TRUST_HEADER_ROW = 1;
 
 /** Préfixe des identifiants générés. */
 var TRUST_ID_PREFIX = 'TR-';
@@ -65,7 +75,8 @@ function remplirIdentifiantsTrust() {
   }
   if (idCol === -1) {
     throw new Error(
-      'Colonne « ' + TRUST_ID_HEADER + ' » introuvable dans la ligne ' + TRUST_HEADER_ROW + '.'
+      'Colonne « ' + TRUST_ID_HEADER + ' » introuvable dans l\'onglet « ' +
+      sheet.getName() + ' », ligne ' + TRUST_HEADER_ROW + '.'
     );
   }
 
@@ -136,31 +147,43 @@ function onOpen() {
     .addToUi();
 }
 
-/** Contrôle sans écriture : signale les identifiants en double. */
+/**
+ * Contrôle sans écriture : signale les identifiants en double.
+ *
+ * Les identifiants doivent être uniques dans TOUT le classeur, pas seulement
+ * dans un onglet : deux onglets peuvent décrire la même marchandise.
+ */
 function verifierDoublonsTrust() {
-  var sheet = SpreadsheetApp.getActive().getSheetByName(TRUST_SHEET_NAME);
-  if (!sheet) return;
-  var lastRow = sheet.getLastRow();
-  var lastCol = sheet.getLastColumn();
-  var headers = sheet.getRange(TRUST_HEADER_ROW, 1, 1, lastCol).getValues()[0];
-  var idCol = -1;
-  for (var i = 0; i < headers.length; i++) {
-    if (String(headers[i]).trim().toLowerCase() === TRUST_ID_HEADER.toLowerCase()) {
-      idCol = i + 1;
-    }
-  }
-  if (idCol === -1 || lastRow <= TRUST_HEADER_ROW) return;
-
-  var ids = sheet
-    .getRange(TRUST_HEADER_ROW + 1, idCol, lastRow - TRUST_HEADER_ROW, 1)
-    .getValues();
   var seen = {};
   var doublons = [];
-  for (var r = 0; r < ids.length; r++) {
-    var v = String(ids[r][0]).trim();
-    if (v === '') continue;
-    if (seen[v]) doublons.push('ligne ' + (TRUST_HEADER_ROW + 1 + r) + ' : ' + v);
-    seen[v] = true;
+  for (var s = 0; s < TRUST_SHEETS.length; s++) {
+    var conf = TRUST_SHEETS[s];
+    var sheet = SpreadsheetApp.getActive().getSheetByName(conf.name);
+    if (!sheet) continue;
+    var headerRow = conf.headerRow || 1;
+    var lastRow = sheet.getLastRow();
+    var lastCol = sheet.getLastColumn();
+    if (lastRow <= headerRow || lastCol < 1) continue;
+
+    var headers = sheet.getRange(headerRow, 1, 1, lastCol).getValues()[0];
+    var idCol = -1;
+    for (var i = 0; i < headers.length; i++) {
+      if (String(headers[i]).trim().toLowerCase() === TRUST_ID_HEADER.toLowerCase()) {
+        idCol = i + 1;
+        break;
+      }
+    }
+    if (idCol === -1) continue;
+
+    var ids = sheet.getRange(headerRow + 1, idCol, lastRow - headerRow, 1).getValues();
+    for (var r = 0; r < ids.length; r++) {
+      var v = String(ids[r][0]).trim();
+      if (v === '') continue;
+      if (seen[v]) {
+        doublons.push(conf.name + ' ligne ' + (headerRow + 1 + r) + ' : ' + v);
+      }
+      seen[v] = true;
+    }
   }
   SpreadsheetApp.getUi().alert(
     doublons.length === 0

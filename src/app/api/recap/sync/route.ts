@@ -33,11 +33,14 @@ export const maxDuration = 60;
 
 interface RecapSourceRow {
   id: string;
+  label: string | null;
   spreadsheet_id: string | null;
   sheet_name: string | null;
   header_row: number | null;
   id_column: string | null;
   column_mapping: ColumnMapping | null;
+  client_carriers: string[] | null;
+  active: boolean | null;
 }
 
 export async function POST(request: Request) {
@@ -55,7 +58,10 @@ export async function POST(request: Request) {
     );
   }
 
-  const preview = new URL(request.url).searchParams.get("preview") === "1";
+  const params = new URL(request.url).searchParams;
+  const preview = params.get("preview") === "1";
+  // Le fichier a un onglet par année : la synchronisation vise UN onglet.
+  const requestedSource = params.get("source");
   let supabase;
   try {
     supabase = createSupabaseServerClient();
@@ -66,17 +72,33 @@ export async function POST(request: Request) {
     );
   }
 
-  // 1. Configuration de la source (RPC : permission + organisation vérifiées).
-  const { data: sourceData, error: sourceError } = await supabase.rpc("get_recap_source");
+  // 1. Configuration des onglets (RPC : permission + organisation vérifiées).
+  const { data: sourceData, error: sourceError } = await supabase.rpc("list_recap_sources");
   if (sourceError) {
     return NextResponse.json({ error: sourceError.message }, { status: 400 });
   }
-  const source = sourceData as RecapSourceRow | null;
-  if (!source?.spreadsheet_id || !source.sheet_name) {
+  const all = (sourceData ?? []) as RecapSourceRow[];
+  // Sans onglet demandé, on prend le premier ACTIF : jamais un onglet mis en
+  // sommeil, qui ne doit plus être relu.
+  const source = requestedSource
+    ? all.find((s) => s.id === requestedSource)
+    : all.find((s) => s.active !== false);
+
+  if (!source) {
+    return NextResponse.json(
+      {
+        error: requestedSource
+          ? "Onglet introuvable dans la configuration."
+          : "Aucun onglet configuré : renseignez l'identifiant du Google Sheet et le nom de l'onglet avant de synchroniser.",
+      },
+      { status: 400 },
+    );
+  }
+  if (!source.spreadsheet_id || !source.sheet_name) {
     return NextResponse.json(
       {
         error:
-          "Aucune source configurée : renseignez l'identifiant du Google Sheet et le nom de l'onglet avant de synchroniser.",
+          "Configuration incomplète : l'identifiant du Google Sheet et le nom de l'onglet sont obligatoires.",
       },
       { status: 400 },
     );
@@ -105,6 +127,7 @@ export async function POST(request: Request) {
       mapping: (source.column_mapping ?? {}) as ColumnMapping,
       warehouses: (warehouses ?? []) as WarehouseRef[],
       firstDataRow: sheet.firstDataRow,
+      clientCarriers: source.client_carriers ?? [],
     });
   } catch (error) {
     const known =
@@ -121,6 +144,7 @@ export async function POST(request: Request) {
 
   const kept = parsed.filter((r) => !r.ignored);
   const summary = {
+    sheetName: source.sheet_name,
     headers,
     rowsRead: parsed.length,
     kept: kept.length,

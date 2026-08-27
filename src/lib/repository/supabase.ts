@@ -581,49 +581,67 @@ export class SupabaseRepository {
 
   // --- Récapitulatif Google Sheets (phase 2) -------------------------------
 
-  /** Configuration de la source de récapitulatif (null si non configurée). */
-  async getRecapSource(): Promise<RecapSource | null> {
-    const { data, error } = await this.supabase.rpc("get_recap_source");
+  /** Onglets configurés du récapitulatif (liste vide si rien n'est branché). */
+  async listRecapSources(): Promise<RecapSource[]> {
+    const { data, error } = await this.supabase.rpc("list_recap_sources");
     throwAsBusiness(error);
-    if (!data) return null;
-    const row = data as Record<string, unknown>;
-    const last = (row.last_read ?? null) as Record<string, unknown> | null;
-    return {
-      id: String(row.id),
-      label: String(row.label ?? ""),
-      spreadsheetId: (row.spreadsheet_id as string) ?? "",
-      sheetName: (row.sheet_name as string) ?? "",
-      headerRow: Number(row.header_row ?? 1),
-      idColumn: (row.id_column as string) ?? undefined,
-      columnMapping: (row.column_mapping ?? {}) as Record<string, string>,
-      lastReadAt: (row.last_read_at as string) ?? undefined,
-      lastReadStatus: (row.last_read_status as string) ?? undefined,
-      lastRead: last
-        ? {
-            startedAt: String(last.started_at ?? ""),
-            finishedAt: (last.finished_at as string) ?? undefined,
-            rowsRead: Number(last.rows_read ?? 0),
-            rowsCreated: Number(last.rows_created ?? 0),
-            rowsUpdated: Number(last.rows_updated ?? 0),
-            rowsIgnored: Number(last.rows_ignored ?? 0),
-            errorsCount: Number(last.errors_count ?? 0),
-            report: (last.report ?? {}) as Record<string, number>,
-          }
-        : undefined,
-    };
+    const rows = (data ?? []) as Record<string, unknown>[];
+    return rows.map((row) => {
+      const last = (row.last_read ?? null) as Record<string, unknown> | null;
+      return {
+        id: String(row.id),
+        label: String(row.label ?? ""),
+        spreadsheetId: (row.spreadsheet_id as string) ?? "",
+        sheetName: (row.sheet_name as string) ?? "",
+        headerRow: Number(row.header_row ?? 1),
+        idColumn: (row.id_column as string) ?? undefined,
+        columnMapping: (row.column_mapping ?? {}) as Record<string, string>,
+        clientCarriers: (row.client_carriers ?? []) as string[],
+        active: row.active !== false,
+        linesCount: Number(row.lines_count ?? 0),
+        lastReadAt: (row.last_read_at as string) ?? undefined,
+        lastReadStatus: (row.last_read_status as string) ?? undefined,
+        lastRead: last
+          ? {
+              startedAt: String(last.started_at ?? ""),
+              finishedAt: (last.finished_at as string) ?? undefined,
+              rowsRead: Number(last.rows_read ?? 0),
+              rowsCreated: Number(last.rows_created ?? 0),
+              rowsUpdated: Number(last.rows_updated ?? 0),
+              rowsIgnored: Number(last.rows_ignored ?? 0),
+              errorsCount: Number(last.errors_count ?? 0),
+              report: (last.report ?? {}) as Record<string, number>,
+            }
+          : undefined,
+      };
+    });
   }
 
-  /** Crée ou met à jour la configuration (permission « importer_recap »). */
+  /** Crée ou met à jour un onglet (permission « importer_recap »). */
   async upsertRecapSource(input: RecapSourceInput): Promise<void> {
     const { error } = await this.supabase.rpc("upsert_recap_source", {
       p_payload: {
+        id: input.id ?? null,
         label: input.label,
         spreadsheet_id: input.spreadsheetId,
         sheet_name: input.sheetName,
         header_row: input.headerRow,
         id_column: input.idColumn ?? null,
         column_mapping: input.columnMapping,
+        client_carriers: input.clientCarriers,
       },
+    });
+    throwAsBusiness(error);
+  }
+
+  /**
+   * Met un onglet en sommeil (ou le réveille).
+   * Aucune ligne n'est supprimée : elles perdraient leur historique.
+   */
+  async setRecapSourceActive(sourceId: string, active: boolean): Promise<void> {
+    const { error } = await this.supabase.rpc("set_recap_source_active", {
+      p_source_id: sourceId,
+      p_active: active,
     });
     throwAsBusiness(error);
   }
@@ -638,6 +656,8 @@ export class SupabaseRepository {
       p_only_anomalies: filters.onlyAnomalies ?? false,
       p_limit: filters.limit ?? 50,
       p_offset: filters.offset ?? 0,
+      p_source_id: filters.sourceId ?? null,
+      p_exit_channel: filters.exitChannel ?? null,
     });
     throwAsBusiness(error);
     const row = (data ?? {}) as { total?: number; rows?: unknown[] };

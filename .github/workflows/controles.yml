@@ -237,6 +237,11 @@ jobs:
           set -euo pipefail
           psql -v ON_ERROR_STOP=1 -f supabase/tests/phase2_recap.test.sql
 
+      - name: Tests onglets multiples et chemins de sortie (phase 3)
+        run: |
+          set -euo pipefail
+          psql -v ON_ERROR_STOP=1 -f supabase/tests/phase3_multi_onglets.test.sql
+
       - name: Test de concurrence (suraffectation impossible)
         run: |
           set -euo pipefail
@@ -316,7 +321,8 @@ jobs:
             "update public.profiles set role = 'logistique'
              where role in ('responsable_logistique','livreur')"
           # Les retours arrière se déroulent dans l'ordre inverse des
-          # migrations : la phase 2 d'abord, le socle ensuite.
+          # migrations : la plus récente d'abord, le socle en dernier.
+          psql -v ON_ERROR_STOP=1 -q -f supabase/rollbacks/ROLLBACK_20260827001100_recap_multi_onglets.sql
           psql -v ON_ERROR_STOP=1 -q -f supabase/rollbacks/ROLLBACK_20260820001000_recap_google_sheets.sql
           psql -v ON_ERROR_STOP=1 -q -f supabase/rollbacks/ROLLBACK_20260819000900_socle_logistique.sql
           psql -v ON_ERROR_STOP=1 -t <<'SQL'
@@ -326,8 +332,15 @@ jobs:
             select count(*) into v from information_schema.routines
             where routine_schema='public' and routine_name in (
               'get_recap_source','upsert_recap_source','sync_recap_rows',
+              'list_recap_sources','set_recap_source_active',
               'list_logistics_lines','get_logistics_line');
-            if v <> 0 then raise exception 'Fonctions phase 2 restantes : %', v; end if;
+            if v <> 0 then raise exception 'Fonctions phases 2-3 restantes : %', v; end if;
+            select count(*) into v from information_schema.columns
+            where table_schema='public'
+              and ((table_name='logistics_lines'
+                    and column_name in ('exit_channel','exit_at','freight_ref'))
+                or (table_name='recap_sources' and column_name='client_carriers'));
+            if v <> 0 then raise exception 'Colonnes phase 3 restantes : %', v; end if;
             select count(*) into v from information_schema.tables
             where table_schema='public' and table_name in (
               'recap_sources','recap_reads','logistics_lines','logistics_line_events',

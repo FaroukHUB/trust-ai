@@ -106,8 +106,9 @@ interface DataContextValue {
     logistics: VariantLogistics,
   ) => Promise<void>;
   /** Configuration du récapitulatif Google Sheets (phase 2). */
-  getRecapSource: () => Promise<RecapSource | null>;
+  listRecapSources: () => Promise<RecapSource[]>;
   saveRecapSource: (input: RecapSourceInput) => Promise<void>;
+  setRecapSourceActive: (sourceId: string, active: boolean) => Promise<void>;
   listLogisticsLines: (filters: LogisticsLineFilters) => Promise<LogisticsLinePage>;
   getLogisticsLine: (lineId: string) => Promise<LogisticsLineDetail>;
   resetDemo: () => void;
@@ -305,10 +306,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
     [remote, refresh, applyLocal],
   );
 
-  const getRecapSource = useCallback(async (): Promise<RecapSource | null> => {
+  const listRecapSources = useCallback(async (): Promise<RecapSource[]> => {
     // Mode démonstration : la connexion au récapitulatif s'appuie sur la base
     // partagée ; aucune configuration fictive n'est inventée.
-    return remote ? remote.getRecapSource() : null;
+    return remote ? remote.listRecapSources() : [];
   }, [remote]);
 
   const saveRecapSource = useCallback(
@@ -319,6 +320,18 @@ export function DataProvider({ children }: { children: ReactNode }) {
         );
       }
       await remote.upsertRecapSource(input);
+    },
+    [remote],
+  );
+
+  const setRecapSourceActive = useCallback(
+    async (sourceId: string, active: boolean) => {
+      if (!remote) {
+        throw new BusinessError(
+          "La connexion au récapitulatif n'est disponible qu'en mode connecté.",
+        );
+      }
+      await remote.setRecapSourceActive(sourceId, active);
     },
     [remote],
   );
@@ -379,8 +392,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
       receiveShipment,
       logisticsSummary,
       setVariantLogistics,
-      getRecapSource,
+      listRecapSources,
       saveRecapSource,
+      setRecapSourceActive,
       listLogisticsLines,
       getLogisticsLine,
       resetDemo,
@@ -401,8 +415,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
       receiveShipment,
       logisticsSummary,
       setVariantLogistics,
-      getRecapSource,
+      listRecapSources,
       saveRecapSource,
+      setRecapSourceActive,
       listLogisticsLines,
       getLogisticsLine,
       resetDemo,

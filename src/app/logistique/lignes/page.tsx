@@ -10,8 +10,13 @@ import { useToast } from "@/components/ui/Toast";
 import { Badge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { formatDate, formatDateTime } from "@/lib/format";
-import { logisticsStageLabels } from "@/lib/labels";
-import type { LogisticsLineDetail, LogisticsLineRow } from "@/lib/types";
+import { exitChannelLabels, logisticsStageLabels } from "@/lib/labels";
+import type {
+  ExitChannel,
+  LogisticsLineDetail,
+  LogisticsLineRow,
+  RecapSource,
+} from "@/lib/types";
 
 /**
  * Lignes du récapitulatif : recherche, filtres, pagination, détail et
@@ -32,8 +37,11 @@ const STAGES = [
   "annulee",
 ];
 
+/** Les trois chemins de sortie, dans l'ordre où ils apparaissent au fichier. */
+const EXIT_CHANNELS: ExitChannel[] = ["paris", "livraison_aubagne", "retrait_aubagne"];
+
 export default function LogisticsLinesPage() {
-  const { mode, listLogisticsLines, getLogisticsLine, db } = useData();
+  const { mode, listLogisticsLines, getLogisticsLine, listRecapSources, db } = useData();
   const { profile } = useSession();
   const { notify } = useToast();
 
@@ -42,6 +50,9 @@ export default function LogisticsLinesPage() {
   const [supplier, setSupplier] = useState("");
   const [warehouseId, setWarehouseId] = useState("");
   const [onlyAnomalies, setOnlyAnomalies] = useState(false);
+  const [sourceId, setSourceId] = useState("");
+  const [exitChannel, setExitChannel] = useState("");
+  const [sources, setSources] = useState<RecapSource[]>([]);
   const [page, setPage] = useState(0);
   const [rows, setRows] = useState<LogisticsLineRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -64,6 +75,8 @@ export default function LogisticsLinesPage() {
         supplier: supplier || undefined,
         warehouseId: warehouseId || undefined,
         onlyAnomalies,
+        sourceId: sourceId || undefined,
+        exitChannel: (exitChannel || undefined) as ExitChannel | undefined,
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
       });
@@ -73,11 +86,31 @@ export default function LogisticsLinesPage() {
       notify(error instanceof Error ? error.message : "Lecture impossible.", "error");
     }
     setLoading(false);
-  }, [canRead, listLogisticsLines, search, stage, supplier, warehouseId, onlyAnomalies, page, notify]);
+  }, [
+    canRead, listLogisticsLines, search, stage, supplier, warehouseId,
+    onlyAnomalies, sourceId, exitChannel, page, notify,
+  ]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Les onglets servent uniquement à alimenter le filtre : un rôle qui lit les
+  // lignes sans pouvoir configurer le récapitulatif n'a pas d'onglet à choisir.
+  useEffect(() => {
+    if (!canRead) return;
+    let cancelled = false;
+    listRecapSources()
+      .then((list) => {
+        if (!cancelled) setSources(list);
+      })
+      .catch(() => {
+        if (!cancelled) setSources([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canRead, listRecapSources]);
 
   const openDetail = async (lineId: string) => {
     try {
@@ -133,7 +166,7 @@ export default function LogisticsLinesPage() {
         </p>
       </div>
 
-      <div className="card grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="card grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-4">
         <label className="relative lg:col-span-2">
           <span className="sr-only">Rechercher</span>
           <Search
@@ -206,6 +239,44 @@ export default function LogisticsLinesPage() {
             ))}
           </select>
         </label>
+        <label>
+          <span className="sr-only">Chemin de sortie</span>
+          <select
+            className="field-input"
+            value={exitChannel}
+            onChange={(e) => {
+              setExitChannel(e.target.value);
+              setPage(0);
+            }}
+          >
+            <option value="">Tous les chemins de sortie</option>
+            {EXIT_CHANNELS.map((c) => (
+              <option key={c} value={c}>
+                {exitChannelLabels[c]?.label ?? c}
+              </option>
+            ))}
+          </select>
+        </label>
+        {sources.length > 1 ? (
+          <label>
+            <span className="sr-only">Onglet du récapitulatif</span>
+            <select
+              className="field-input"
+              value={sourceId}
+              onChange={(e) => {
+                setSourceId(e.target.value);
+                setPage(0);
+              }}
+            >
+              <option value="">Tous les onglets</option>
+              {sources.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.label} ({s.sheetName})
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
@@ -240,6 +311,7 @@ export default function LogisticsLinesPage() {
                   <th scope="col">Fournisseur</th>
                   <th scope="col">Étape</th>
                   <th scope="col">Destination</th>
+                  <th scope="col">Sortie</th>
                   <th scope="col">Arrivée prévue</th>
                   <th scope="col">État</th>
                 </tr>
@@ -285,6 +357,26 @@ export default function LogisticsLinesPage() {
                             à confirmer
                           </p>
                         ) : null}
+                      </td>
+                      <td>
+                        {row.exit_channel ? (
+                          <>
+                            <Badge tone={exitChannelLabels[row.exit_channel]?.tone ?? "neutral"}>
+                              {exitChannelLabels[row.exit_channel]?.label ?? row.exit_channel}
+                            </Badge>
+                            {row.exit_at ? (
+                              <p className="text-xs" style={{ color: "var(--muted)" }}>
+                                {formatDate(row.exit_at)}
+                              </p>
+                            ) : null}
+                          </>
+                        ) : row.freight_ref ? (
+                          <span className="text-xs" style={{ color: "var(--muted)" }}>
+                            Affrètement {row.freight_ref}
+                          </span>
+                        ) : (
+                          "—"
+                        )}
                       </td>
                       <td className="whitespace-nowrap">
                         {row.expected_at ? formatDate(row.expected_at) : "—"}

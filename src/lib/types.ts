@@ -258,7 +258,14 @@ export interface LogisticsSummary {
 // Récapitulatif Google Sheets (phase 2)
 // ---------------------------------------------------------------------------
 
-/** Configuration de la source de récapitulatif (lecture seule côté TRUST AI). */
+/**
+ * Un ONGLET du récapitulatif (lecture seule côté TRUST AI).
+ *
+ * Le fichier réel est organisé par année : « INTERNET » pour l'année en
+ * cours, « SUIVIS 2025 » pour la précédente, et un nouvel onglet apparaîtra
+ * en janvier. Chaque onglet est donc une source à part entière, avec sa
+ * propre correspondance de colonnes et son propre historique de lectures.
+ */
 export interface RecapSource {
   id: string;
   label: string;
@@ -267,8 +274,20 @@ export interface RecapSource {
   headerRow: number;
   /** Colonne « ID TRUST », alimentée par l'Apps Script installé dans le Sheet. */
   idColumn?: string;
-  /** Mapping « champ métier → en-tête de colonne ». */
+  /**
+   * Correspondance « champ métier → colonne ». La valeur est un TITRE de
+   * colonne ou une LETTRE (« G », « AB ») : le fichier réel comporte des
+   * colonnes sans titre et deux colonnes homonymes.
+   */
   columnMapping: Record<string, string>;
+  /**
+   * Transporteurs qui livrent le client depuis Paris (OMAR, GEODIS…).
+   * Éditable ici plutôt que codé en dur : la liste change chaque année.
+   */
+  clientCarriers: string[];
+  active: boolean;
+  /** Nombre de lignes déjà importées depuis cet onglet. */
+  linesCount: number;
   lastReadAt?: string;
   lastReadStatus?: string;
   lastRead?: RecapReadReport;
@@ -286,13 +305,19 @@ export interface RecapReadReport {
 }
 
 export interface RecapSourceInput {
+  /** Absent = nouvel onglet ; renseigné = mise à jour de celui-ci. */
+  id?: string;
   label: string;
   spreadsheetId: string;
   sheetName: string;
   headerRow: number;
   idColumn?: string;
   columnMapping: Record<string, string>;
+  clientCarriers: string[];
 }
+
+/** Par quel chemin le client a été servi (les trois sont exclusifs). */
+export type ExitChannel = "paris" | "livraison_aubagne" | "retrait_aubagne";
 
 export interface LogisticsLineFilters {
   search?: string;
@@ -302,6 +327,9 @@ export interface LogisticsLineFilters {
   onlyAnomalies?: boolean;
   limit?: number;
   offset?: number;
+  /** Restreindre à un onglet du récapitulatif. */
+  sourceId?: string;
+  exitChannel?: ExitChannel;
 }
 
 /** Ligne du récapitulatif telle qu'affichée dans la liste. */
@@ -326,6 +354,12 @@ export interface LogisticsLineRow {
   last_seen_at?: string;
   last_changed_at?: string;
   open_anomalies: number;
+  /** Renseigné dès que la marchandise est partie chez le client. */
+  exit_channel?: ExitChannel;
+  exit_at?: string;
+  /** Numéro d'affrètement du transfert Argenteuil → Aubagne (« E243 »). */
+  freight_ref?: string;
+  source_id?: string;
 }
 
 export interface LogisticsLinePage {

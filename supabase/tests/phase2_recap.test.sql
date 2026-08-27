@@ -86,10 +86,14 @@ begin
   perform public.upsert_recap_source(jsonb_build_object(
     'label', 'Récapitulatif',
     'spreadsheet_id', '1AbCdEfGhIjKl',
-    'sheet_name', 'RECAP 2026',
+    'sheet_name', 'RECAP',
     'header_row', 2));
-  v_source := public.get_recap_source();
-  if v_source is null or v_source->>'sheet_name' <> 'RECAP 2026' then
+  -- Depuis la migration 11 la configuration est une LISTE : plusieurs
+  -- onglets peuvent coexister. Le MÊME onglet redéclaré met à jour la source
+  -- existante — l'identité est le couple (classeur, onglet), plus le libellé.
+  v_source := public.list_recap_sources();
+  if jsonb_array_length(v_source) <> 1
+     or (v_source->0->>'header_row')::int <> 2 then
     raise exception 'ECHEC : configuration non mise à jour (%)', v_source;
   end if;
   raise notice 'TEST 1c OK — la configuration est mise à jour';
@@ -590,7 +594,7 @@ begin
   end;
 
   -- Et la source de A n'est pas visible depuis B.
-  if public.get_recap_source() is not null then
+  if jsonb_array_length(public.list_recap_sources()) <> 0 then
     raise exception 'ECHEC : B voit la configuration de A';
   end if;
   raise notice 'TEST 7 OK — cloisonnement total entre organisations';
@@ -713,8 +717,8 @@ begin
   if (v_summary->>'lignes_total')::int <> 4 then
     raise exception 'ECHEC : logistics_summary incohérent';
   end if;
-  if public.get_recap_source() is null then
-    raise exception 'ECHEC : get_recap_source cassée';
+  if jsonb_array_length(public.list_recap_sources()) <> 1 then
+    raise exception 'ECHEC : list_recap_sources cassée';
   end if;
   raise notice 'TEST 9c OK — les RPC publiques fonctionnent (les déclencheurs aussi)';
 end $$;

@@ -218,6 +218,17 @@ export const roleLabels: Record<Role, string> = {
  * Étapes d'une ligne du récapitulatif (phase 2). L'étape décrit OÙ se trouve
  * la marchandise ; les retards et les anomalies sont suivis séparément.
  */
+/**
+ * Les trois façons de servir un client, telles que le récapitulatif les
+ * distingue. Elles sont exclusives : une ligne servie par l'une n'est plus
+ * disponible pour les autres.
+ */
+export const exitChannelLabels: Record<string, { label: string; tone: BadgeTone }> = {
+  paris: { label: "Servi par Paris", tone: "info" },
+  livraison_aubagne: { label: "Livré depuis Aubagne", tone: "info" },
+  retrait_aubagne: { label: "Retiré à Aubagne", tone: "neutral" },
+};
+
 export const logisticsStageLabels: Record<string, { label: string; tone: BadgeTone }> = {
   a_commander: { label: "À commander", tone: "warning" },
   commandee: { label: "Commandée", tone: "info" },

@@ -6,8 +6,9 @@ installation, aucune ligne de commande.
 À la fin :
 
 - TRUST AI **lit** le fichier récapitulatif, en **lecture seule** ;
-- chaque ligne du fichier devient une ligne suivie dans TRUST AI (arrivées,
-  transfert Argenteuil → Aubagne, disponibilité) ;
+- chaque ligne du fichier devient une ligne suivie dans TRUST AI : arrivée à
+  Argenteuil, transfert vers Aubagne, disponibilité, et sortie chez le client
+  par l'un des trois chemins que le fichier décrit ;
 - **rien ne change pour les vendeuses** : elles continuent à remplir le
   fichier exactement comme aujourd'hui.
 
@@ -35,7 +36,7 @@ dans le fichier lui-même** (étape 3), et uniquement dans une colonne technique
 2. Partager le Google Sheets **en lecteur** avec ce compte de service.
 3. Installer le script `ID TRUST` dans le Google Sheets.
 4. Renseigner les deux variables dans Vercel.
-5. Configurer la source dans TRUST AI et prévisualiser.
+5. Configurer les onglets dans TRUST AI et prévisualiser.
 
 Comptez 20 à 30 minutes la première fois.
 
@@ -106,10 +107,21 @@ même si elle est déplacée, triée ou corrigée.
 3. Effacer le contenu de `Code.gs`, puis coller **tout** le contenu du fichier
    [`google-apps-script/id-trust.gs`](../google-apps-script/id-trust.gs) de ce
    dépôt.
-4. En haut du script, vérifier les trois réglages :
-   - `TRUST_SHEET_NAME` : le nom exact de l'onglet (`RECAP` par défaut) ;
-   - `TRUST_ID_HEADER` : `ID TRUST` ;
-   - `TRUST_HEADER_ROW` : le numéro de la ligne des titres (1 par défaut).
+4. En haut du script, vérifier la liste des onglets suivis :
+
+   ```js
+   var TRUST_SHEETS = [
+     { name: 'INTERNET',    headerRow: 4 },
+     { name: 'SUIVIS 2025', headerRow: 4 },
+   ];
+   ```
+
+   `name` est le nom **exact** de l'onglet, `headerRow` le numéro de la ligne
+   des titres — **4** pour le récapitulatif de Trust Industrie, parce que
+   trois lignes de bandeaux la précèdent.
+
+   **En janvier prochain**, quand un nouvel onglet sera créé, ajoutez-le à
+   cette liste. C'est la seule modification à faire.
 5. Icône **Enregistrer** (disquette).
 6. Choisir la fonction `remplirIdentifiantsTrust` dans la liste déroulante,
    puis **Exécuter**. Google demande une autorisation : **Autoriser**
@@ -130,6 +142,13 @@ lancer le remplissage à la main ou vérifier les doublons.
 > `ID TRUST`. Un copier-coller de ligne crée un doublon d'identifiant : le
 > script régénère alors **uniquement la copie**, l'originale garde son
 > historique.
+
+### Pourquoi cette colonne n'est pas optionnelle
+
+En analysant le fichier réel, on a trouvé **sept groupes de lignes strictement
+identiques** — mêmes valeurs dans les 31 colonnes. Sans `ID TRUST`, TRUST AI ne
+peut pas les distinguer et n'en verra qu'une seule. La colonne est ce qui donne
+à chaque ligne une identité propre.
 
 ---
 
@@ -162,59 +181,82 @@ configuration indique simplement que la connexion Google n'est pas en place.
 
 ---
 
-## Étape 5 — Configurer la source dans TRUST AI
+## Étape 5 — Configurer les onglets dans TRUST AI
 
 1. Se connecter à TRUST AI avec un compte **responsable logistique**,
    **direction** ou **administrateur**.
 2. Menu **Logistique** → **Configurer le récapitulatif**
    (`/logistique/recap`).
-3. Remplir :
-   - **Identifiant du fichier** : la suite de caractères notée à l'étape 2 ;
-   - **Nom de l'onglet** : `RECAP` (ou le vôtre) ;
-   - **Ligne des titres** : `1` en général ;
-   - **Colonne d'identifiant** : `ID TRUST`.
-4. **Correspondance des colonnes** : pour chaque information attendue par
-   TRUST AI, indiquer le **titre exact** de la colonne du fichier. Les
-   accents, espaces et majuscules n'ont pas d'importance ; l'ordre des
-   colonnes non plus.
-
-   | Champ affiché dans TRUST AI | Colonne typique du fichier |
-   |---|---|
-   | ID TRUST | `ID TRUST` (colonne créée à l'étape 3) |
-   | Date | `DATE` |
-   | Fournisseur | `FOURNISSEUR` |
-   | Statut | `STATUT` |
-   | Référence fournisseur | `RÉFÉRENCE` |
-   | Désignation | `DÉSIGNATION` |
-   | Quantité | `QTÉ` |
-   | Client | `CLIENT` |
-   | ORDER (n° de commande **fournisseur**) | `ORDER` |
-   | Arrivée prévue | `ARRIVAGE PRÉVU` |
-   | Commentaires | `COMMENTAIRES` |
-   | Réception Argenteuil | `REÇU ARGENTEUIL` |
-   | Date réception Argenteuil | `DATE RÉCEPTION ARGENTEUIL` |
-   | Affrètement | `AFFRÈTEMENT` |
-   | Mode de sortie / transporteur | `MODE DE SORTIE` |
-   | Réception Aubagne | `REÇU AUBAGNE` |
-   | Date réception Aubagne | `DATE RÉCEPTION AUBAGNE` |
-   | Livraison ou retrait final | `SORTIE DÉFINITIVE` |
-   | Date finale | `DATE SORTIE` |
-
-   Une colonne laissée vide est simplement ignorée.
-
-5. **Enregistrer**, puis **Prévisualiser**. La prévisualisation lit le fichier
-   et affiche ce que TRUST AI comprendrait — **sans rien écrire**. C'est le
-   moment de corriger la correspondance des colonnes.
+3. Cliquer **Remplir avec le format Trust Industrie**. Le formulaire se
+   remplit avec la correspondance déjà établie pour votre fichier : ligne des
+   titres 4, colonne `ID TRUST`, les 24 colonnes et les transporteurs. Vous
+   n'avez plus qu'à ajouter l'identifiant du fichier et le nom de l'onglet.
+4. Renseigner :
+   - **Identifiant du Google Sheet** : la suite de caractères notée à l'étape 2 ;
+   - **Nom de l'onglet** : `INTERNET` (au caractère près, tel qu'affiché en bas
+     du Sheet) ;
+   - **Libellé dans TRUST AI** : ce que vous voulez, c'est décoratif.
+5. **Ajouter cet onglet**, puis **Prévisualiser**. La prévisualisation lit le
+   fichier et affiche ce que TRUST AI comprendrait — **sans rien écrire**.
 6. Quand la prévisualisation est juste : **Synchroniser maintenant**.
-7. Menu **Logistique** → **Lignes du récapitulatif** (`/logistique/lignes`)
-   pour consulter, filtrer et ouvrir le détail de chaque ligne.
+7. Répéter pour l'onglet de l'année précédente (`SUIVIS 2025`) si vous voulez
+   aussi l'historique. **Commencez par un seul onglet** : il est plus facile de
+   vérifier 332 lignes que 1 107.
+
+Menu **Logistique** → **Lignes du récapitulatif** (`/logistique/lignes`) pour
+consulter, filtrer et ouvrir le détail de chaque ligne.
+
+### Un onglet par année
+
+Le fichier est organisé par exercice. En janvier, quand un nouvel onglet est
+créé, il suffit de l'ajouter ici (bouton **Ajouter un onglet**) et dans le
+script du Sheet. Rien d'autre à faire, et aucune ligne de l'ancien onglet n'est
+perdue.
+
+Un onglet dont on ne veut plus peut être **mis en sommeil** : il n'est plus
+relu, mais ses lignes et leur historique restent en place. Il n'y a aucun
+bouton pour supprimer un onglet — ce serait détruire de l'historique.
+
+### Désigner une colonne par sa LETTRE
+
+Le champ de correspondance accepte deux choses :
+
+- le **titre exact** de la colonne (`DATE DU RECAP`, `EXPEDITEUR`…) — les
+  accents, la casse et les espaces n'ont pas d'importance ;
+- la **lettre** de la colonne (`G`, `P`, `W`, `AB`…).
+
+La lettre sert dans deux cas que votre fichier présente réellement :
+
+- **une colonne sans titre.** Les colonnes G (les clients), P (« LIVRÉ ») et W
+  (la date de retrait) n'ont pas d'en-tête ; Google affiche « Colonne 7 »,
+  « Colonne 1 », « Colonne 23 », qui ne sont pas de vrais titres.
+- **deux colonnes de même nom.** Votre fichier a deux colonnes
+  « COMMENTAIRES » (J et N). Les deux contiennent des informations utiles —
+  annulations, SAV, retours — et seule la lettre permet de les viser
+  séparément.
+
+Grâce à ça, **le fichier n'a pas besoin d'être modifié**.
+
+### La liste des transporteurs
+
+Le champ **Transporteurs qui livrent le client** contient, séparés par des
+virgules, les noms qui apparaissent dans la colonne `EXPEDITEUR` et qui
+désignent une livraison au client depuis Paris : `OMAR`, `GEODIS`, `GUISNEL`,
+`DEFITRANS`, `COCOLIS`.
+
+Cette liste est ici plutôt que dans le code parce qu'elle change : sur l'onglet
+2025 il y avait `DEFITRANS` et `COCOLIS`, absents de 2026. Quand un nouveau
+transporteur apparaît, ajoutez-le — pas besoin de développement.
 
 ---
 
 ## Comment TRUST AI lit le fichier
 
-Ces règles ont été fixées avec vous ; elles sont vérifiées par des tests
+Ces règles ont été fixées avec vous après analyse du fichier réel
+(1 107 lignes sur deux onglets). Elles sont vérifiées par des tests
 automatiques à chaque modification du code.
+
+### Les repères de base
 
 - **`ORDER` est le numéro de commande FOURNISSEUR**, jamais celui du client.
 - **Herblay est un magasin**, **Argenteuil un dépôt**, **Aubagne un dépôt
@@ -223,14 +265,65 @@ automatiques à chaque modification du code.
 - **Argenteuil → Aubagne est un transfert**, pas deux disponibilités : la
   marchandise n'est comptée disponible **qu'une fois**, à destination.
 - **Une réception partielle ne rend jamais la ligne disponible.**
-- **Une destination non reconnue n'est jamais devinée** : la ligne reçoit une
-  anomalie « destination ambiguë » et attend un arbitrage humain.
 - Les **lignes de total** et les lignes vides sont ignorées.
 - Les dates sont comprises au format français (`05/08/2026`), au format ISO
-  (`2026-08-05`) et au format interne de Google Sheets.
+  et au format interne de Google Sheets.
 - Les cases de réception acceptent `oui`, `x`, `ok`, `✔`, `vrai`… et leurs
   contraires. Une cellule **vide** signifie « on ne sait pas » ; une cellule
   contenant seulement `-` ou `/` signifie « non ».
+
+### Les trois façons de servir un client
+
+Votre fichier en décrit trois, et elles sont exclusives :
+
+| Chemin | Colonnes | Ce que ça veut dire |
+|---|---|---|
+| **Servi par Paris** | P + Q | Le client a été livré ou a retiré, côté Paris |
+| **Livré depuis Aubagne** | T + U | Livraison au client depuis Aubagne |
+| **Retiré à Aubagne** | V + W | Le client est venu chercher sur place |
+
+**Une ligne close par l'un des trois n'est plus disponible.** C'est pour ça
+qu'il faut les renseigner tous les trois : n'en suivre qu'un reviendrait à
+annoncer de la marchandise déjà partie chez un client.
+
+**C'est la date qui fait foi, pas le marqueur.** Dans votre fichier, 30 lignes
+sur 142 ont une date de livraison sans le « LIVRÉ » correspondant. Se fier au
+marqueur laisserait 30 clients affichés « en attente » alors qu'ils sont
+servis.
+
+Si une ligne porte **deux** sorties, TRUST AI retient la **plus ancienne** et
+ouvre une anomalie pour qu'un humain vérifie.
+
+### Comment la destination est déterminée
+
+Dans cet ordre, on s'arrête au premier qui répond :
+
+1. **Le bloc Aubagne est renseigné** (R, S, T, U, V ou W) → Aubagne. C'est un
+   fait constaté, pas une déduction.
+2. **Un numéro d'affrètement existe** → Aubagne, transfert en cours. C'est
+   l'affrètement qui matérialise le trajet Argenteuil → Aubagne : 251 des 289
+   lignes affrétées portent « LIVRAISON AUBAGNE », et aucune ligne confiée à un
+   livreur client n'en porte.
+3. **L'expéditeur nomme un dépôt** (`LIVRAISON AUBAGNE`, `RETRAIT ARGENTEUIL`)
+   → ce dépôt. La faute de frappe `ARGENTEUL`, présente 219 fois, est reconnue.
+4. **L'expéditeur est un livreur client connu** (liste ci-dessus) → Paris.
+5. **Paris a clos la ligne** → Paris.
+6. Sinon, la destination reste **indéterminée** — et c'est très bien tant que
+   la marchandise n'est pas arrivée.
+
+### Ce que TRUST AI signale
+
+| Anomalie | Quand |
+|---|---|
+| **Reçue sans destination** | La marchandise est **physiquement** à Argenteuil et on ne sait pas où l'envoyer. C'est le cas le plus utile : votre fichier en compte une centaine. |
+| **Annulation signalée** | Le mot « annul… » apparaît dans un commentaire. La ligne n'est **jamais fermée automatiquement** — « elle veut annuler sa commande » est une demande, pas un fait. Quand la marchandise est déjà reçue, l'anomalie est marquée **bloquante** : il y a du stock à réaffecter. |
+| **Date illisible** | Une colonne de date contient autre chose qu'une date — presque toujours un décalage de colonnes. Cinq lignes de 2025 sont dans ce cas. |
+| **Deux sorties enregistrées** | La ligne est close deux fois par deux chemins différents. |
+| **Réception partielle** | Une partie seulement est arrivée. |
+| **Ligne absente du fichier** | Une ligne déjà connue n'apparaît plus. Elle est **conservée** et signalée. |
+
+Une commande encore chez le fournisseur, sans destination, ne déclenche
+**aucune** anomalie : ce serait du bruit.
 
 ### Une ligne qui disparaît du fichier
 
@@ -240,19 +333,21 @@ tout seul.
 
 ### Une ligne déjà sortie ou annulée dans TRUST AI
 
-Elle ne « recule » pas : le suivi interne l'emporte sur le fichier pour ces
-deux états.
+Elle ne « recule » pas. Et une sortie déjà constatée n'est **jamais effacée**
+par une relecture : si la colonne est vidée dans le fichier, la marchandise est
+partie quand même.
 
 ---
 
 ## Relancer la lecture
 
-La synchronisation se lance **à la demande**, depuis le bouton
-**Synchroniser maintenant**. Elle est **idempotente** : la relancer dix fois
-de suite ne crée aucun doublon, ni de ligne, ni d'événement, ni d'anomalie.
+La synchronisation se lance **à la demande**, onglet par onglet, depuis le
+bouton **Synchroniser maintenant**. Elle est **idempotente** : la relancer dix
+fois de suite ne crée aucun doublon, ni de ligne, ni d'événement, ni
+d'anomalie.
 
-Le bandeau « Dernière lecture » de la page de configuration indique la date,
-le nombre de lignes lues, créées, modifiées, ignorées et les erreurs.
+Le bandeau de chaque onglet indique la date de dernière lecture, le nombre de
+lignes lues, créées, modifiées, ignorées et les anomalies.
 
 ---
 
@@ -263,9 +358,10 @@ le nombre de lignes lues, créées, modifiées, ignorées et les erreurs.
 | « Connexion Google Sheets non configurée » | Variables absentes dans Vercel | Étape 4, puis **redéployer** |
 | « Accès refusé par Google » | Le fichier n'est pas partagé avec le compte de service | Étape 2 : partager en **Lecteur** |
 | « Fichier introuvable » | Identifiant du fichier erroné | Recopier la partie entre `/d/` et `/edit` |
-| Aucune ligne lue | Nom d'onglet ou ligne de titres erronés | Recopier le nom **exact** de l'onglet |
-| Beaucoup d'anomalies « destination ambiguë » | Colonne `MODE DE SORTIE` mal associée | Vérifier la correspondance des colonnes |
+| Aucune ligne lue | Nom d'onglet ou ligne des titres erronés | Recopier le nom **exact** de l'onglet ; ligne des titres = 4 |
+| Beaucoup d'anomalies « reçue sans destination » | Normal au début : ce sont vos lignes réellement sans destination | Les traiter une par une, ou compléter la colonne `EXPEDITEUR` |
 | Des lignes en double | La colonne `ID TRUST` n'existe pas ou le script n'est pas installé | Étape 3 |
+| « Onglet introuvable » au lancement du script | Un nom dans `TRUST_SHEETS` ne correspond à aucun onglet | Corriger la liste en haut du script |
 
 ---
 
